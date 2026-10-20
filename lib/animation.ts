@@ -23,7 +23,7 @@ export type Animation = {
 // Runs inside a Web Worker so generated code can't touch the page.
 const workerSource = `
 const FONT = ${JSON.stringify(FONT_5X7)};
-for (const k of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'importScripts', 'indexedDB', 'caches']) {
+for (const k of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'importScripts', 'indexedDB', 'caches', 'Worker', 'SharedWorker']) {
   try { self[k] = undefined; } catch {}
 }
 self.onmessage = (e) => {
@@ -90,7 +90,11 @@ self.onmessage = (e) => {
 `;
 
 /** Renders an animation to an array of 0/1 frames, in a worker with a time limit. */
-export function renderAnimation(anim: Animation, mode: DisplayMode = 'mono', timeoutMs = 4000): Promise<Frame[]> {
+export function renderAnimation(
+  anim: Animation,
+  mode: DisplayMode = 'mono',
+  { timeoutMs = 4000, width = WIDTH, height = HEIGHT } = {},
+): Promise<Frame[]> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
     const worker = new Worker(url);
@@ -112,6 +116,6 @@ export function renderAnimation(anim: Animation, mode: DisplayMode = 'mono', tim
       done();
       reject(new Error(e.message || 'Worker error'));
     };
-    worker.postMessage({ ...anim, width: WIDTH, height: HEIGHT, mode });
+    worker.postMessage({ title: anim.title, code: anim.code, fps: anim.fps, durationMs: anim.durationMs, width, height, mode });
   });
 }

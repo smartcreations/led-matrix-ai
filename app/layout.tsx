@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'LED Matrix Studio',
-  description: 'Describe an animation and preview it on a 160x16 LED matrix',
+  description: 'Describe an animation and preview it on an LED matrix',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

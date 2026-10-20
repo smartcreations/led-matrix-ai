@@ -10,7 +10,6 @@
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.83",
     "@ai-sdk/react": "4.0.149",
-    "@vercel/blob": "2.8.0",
     "ai": "7.0.145",
     "next": "16.4.2",
     "react": "19.3.1",

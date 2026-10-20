@@ -47,9 +47,6 @@ export default function Home() {
   const applied = useRef(new Set<string>());
   const { messages, sendMessage, status, error: chatError } = useChat();
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [share, setShare] = useState<{ state: 'idle' | 'saving' | 'done' | 'error'; text?: string; copied?: boolean }>({
-    state: 'idle',
-  });
 
   // Restore the saved display type.
   useEffect(() => {
@@ -125,31 +122,6 @@ export default function Home() {
   const litCount = useMemo(() => frame.reduce((n, row) => n + row.filter((v) => v !== 0).length, 0), [frame]);
   const send = (text: string) => sendMessage({ text }, { body: { mode } });
 
-  // Saves the animation recipe (not the chat) and copies a public link to it.
-  const createShare = async () => {
-    setShare({ state: 'saving' });
-    try {
-      const res = await fetch('/api/share', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: anim.title, code: anim.code, fps: anim.fps, durationMs: anim.durationMs, mode, width: WIDTH, height: HEIGHT }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Saving the share link failed.');
-      let copied = false;
-      try {
-        await navigator.clipboard.writeText(data.url);
-        copied = true;
-      } catch {}
-      setShare({ state: 'done', text: data.url, copied });
-    } catch (e) {
-      setShare({ state: 'error', text: (e as Error).message });
-    }
-  };
-
-  // A new animation needs a new link.
-  useEffect(() => setShare({ state: 'idle' }), [anim, mode]);
-
   const copyFrame = () => navigator.clipboard.writeText(JSON.stringify(frame));
   const copyAll = () => navigator.clipboard.writeText(JSON.stringify(frames));
 
@@ -197,22 +169,7 @@ export default function Home() {
           </select>
           <button onClick={copyFrame}>Copy frame ({mode === 'rgb' ? '0xRRGGBB' : '0/1'} JSON)</button>
           <button onClick={copyAll}>Copy all frames</button>
-          <button onClick={createShare} disabled={share.state === 'saving'}>
-            {share.state === 'saving' ? 'Creating link…' : 'Share link'}
-          </button>
         </div>
-        {share.state === 'done' && (
-          <div className="share-link">
-            <input id="share-url" readOnly value={share.text} onFocus={(e) => e.target.select()} aria-label="Share link" />
-            <button onClick={() => navigator.clipboard.writeText(share.text ?? '').then(() => setShare({ ...share, copied: true }))}>
-              {share.copied ? 'Copied' : 'Copy'}
-            </button>
-            <a className="button-link" href={share.text} target="_blank" rel="noreferrer">
-              Open
-            </a>
-          </div>
-        )}
-        {share.state === 'error' && <div className="error">{share.text}</div>}
 
         <div className="toolbar" style={{ justifyContent: 'space-between' }}>
           <span className="muted">

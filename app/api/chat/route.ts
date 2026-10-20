@@ -6,17 +6,11 @@ import {
   tool,
   type UIMessage,
 } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import { z } from 'zod';
 import { HEIGHT, WIDTH } from '@/lib/animation';
+import { chatModel } from '@/lib/models';
 
 export const maxDuration = 60;
-
-// With ANTHROPIC_API_KEY set, call Anthropic directly; otherwise use the AI Gateway
-// (AI_GATEWAY_API_KEY), where any gateway model id works, including Google Gemini models.
-const MODEL = process.env.ANTHROPIC_API_KEY
-  ? anthropic(process.env.LED_MODEL ?? 'claude-sonnet-5-5')
-  : (process.env.LED_MODEL ?? 'anthropic/claude-sonnet-5.5');
 
 const SYSTEM = `You design animations for a monochrome LED dot-matrix display that is ${WIDTH} pixels wide and ${HEIGHT} pixels tall.
 Whenever the user describes or changes an animation, call the createAnimation tool with the complete code, then reply with one short sentence.
@@ -38,7 +32,7 @@ export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
   const result = streamText({
-    model: MODEL,
+    model: chatModel,
     system: SYSTEM,
     messages: await convertToModelMessages(messages),
     tools: {

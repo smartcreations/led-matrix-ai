@@ -56,3 +56,5 @@ textarea.code {
   border-radius: 6px;
   padding: 8px 10px;
 }
+.suggestions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 8px; }
+.suggestion { font-size: 12px; padding: 4px 10px; border-radius: 999px; text-align: left; }

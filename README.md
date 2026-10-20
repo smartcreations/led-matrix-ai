@@ -11,7 +11,7 @@ npm run dev                                         # http://localhost:3000
 ```
 
 The demos and the code editor work without a key; only the chat needs one.
-To use another model (Gemini, for example) set `LED_MODEL` in `.env.local` to its AI Gateway model id (with `AI_GATEWAY_API_KEY`). With `ANTHROPIC_API_KEY`, `LED_MODEL` is an Anthropic model id; the default is `claude-sonnet-5-5`.
+To use another model (Gemini, for example) set `LED_MODEL` in `.env.local` to its AI Gateway model id (with `AI_GATEWAY_API_KEY`). With `ANTHROPIC_API_KEY`, `LED_MODEL` is an Anthropic model id; the default is `claude-sonnet-5-5`. The starter suggestions under the chat input come from a small model (`claude-haiku-5-5` by default, override with `SUGGESTIONS_MODEL`).
 
 ## How it fits together
 

@@ -25,6 +25,14 @@ export default function Home() {
   const [input, setInput] = useState('');
   const applied = useRef(new Set<string>());
   const { messages, sendMessage, status, error: chatError } = useChat();
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch('/api/suggestions')
+      .then((r) => r.json())
+      .then((d: { suggestions?: string[] }) => setSuggestions(d.suggestions ?? []))
+      .catch(() => {});
+  }, []);
 
   const load = useCallback(async (next: Animation) => {
     setAnim(next);
@@ -165,6 +173,16 @@ export default function Home() {
             Send
           </button>
         </form>
+        {messages.length === 0 && (
+          <div className="suggestions">
+            {suggestions.length === 0 && <span className="muted">Thinking of ideas…</span>}
+            {suggestions.map((s) => (
+              <button key={s} type="button" className="suggestion" disabled={busy} onClick={() => sendMessage({ text: s })}>
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   );

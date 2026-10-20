@@ -3,10 +3,11 @@
 import { useChat } from '@ai-sdk/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import LedMatrix from '@/components/LedMatrix';
-import { HEIGHT, WIDTH, renderAnimation, type Animation, type Frame } from '@/lib/animation';
+import { HEIGHT, WIDTH, renderAnimation, type Animation, type DisplayMode, type Frame } from '@/lib/animation';
 import { DEMOS } from '@/lib/demos';
 
 const BLANK: Frame = Array.from({ length: HEIGHT }, () => new Array(WIDTH).fill(0));
+const MODE_KEY = 'led-display-mode';
 
 type ToolPart = {
   type: 'tool-createAnimation';
@@ -23,32 +24,55 @@ export default function Home() {
   const [playing, setPlaying] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  const [mode, setMode] = useState<DisplayMode>('mono');
   const applied = useRef(new Set<string>());
   const { messages, sendMessage, status, error: chatError } = useChat();
   const [suggestions, setSuggestions] = useState<string[]>([]);
 
+  // Restore the saved display type.
   useEffect(() => {
-    fetch('/api/suggestions')
-      .then((r) => r.json())
-      .then((d: { suggestions?: string[] }) => setSuggestions(d.suggestions ?? []))
-      .catch(() => {});
+    try {
+      if (localStorage.getItem(MODE_KEY) === 'rgb') setMode('rgb');
+    } catch {}
   }, []);
+
+  const changeMode = (next: DisplayMode) => {
+    setMode(next);
+    try {
+      localStorage.setItem(MODE_KEY, next);
+    } catch {}
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setSuggestions([]);
+    fetch(`/api/suggestions?mode=${mode}`)
+      .then((r) => r.json())
+      .then((d: { suggestions?: string[] }) => !cancelled && setSuggestions(d.suggestions ?? []))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
 
   const load = useCallback(async (next: Animation) => {
     setAnim(next);
     setCode(next.code);
     try {
-      const rendered = await renderAnimation(next);
+      const rendered = await renderAnimation(next, mode);
       setFrames(rendered);
       setIndex(0);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [mode]);
 
+  // First load, and re-render the current animation whenever the display type changes.
+  const current = useRef(anim);
+  current.current = anim;
   useEffect(() => {
-    load(DEMOS[0]);
+    load(current.current);
   }, [load]);
 
   // Pick up animations the AI creates.
@@ -71,7 +95,8 @@ export default function Home() {
   }, [playing, frames.length, anim.fps]);
 
   const frame = frames[index] ?? BLANK;
-  const litCount = useMemo(() => frame.reduce((n, row) => n + row.reduce((a, b) => a + b, 0), 0), [frame]);
+  const litCount = useMemo(() => frame.reduce((n, row) => n + row.filter((v) => v !== 0).length, 0), [frame]);
+  const send = (text: string) => sendMessage({ text }, { body: { mode } });
 
   const copyFrame = () => navigator.clipboard.writeText(JSON.stringify(frame));
   const copyAll = () => navigator.clipboard.writeText(JSON.stringify(frames));
@@ -84,15 +109,19 @@ export default function Home() {
         <div className="toolbar" style={{ justifyContent: 'space-between' }}>
           <strong>{anim.title}</strong>
           <span className="muted">
-            {WIDTH}×{HEIGHT} · frame {index + 1}/{frames.length} · {anim.fps} fps · {litCount} LEDs on
+            {WIDTH}×{HEIGHT} {mode === 'rgb' ? 'RGB' : 'bicolor'} · frame {index + 1}/{frames.length} · {anim.fps} fps · {litCount} LEDs on
           </span>
         </div>
 
         <div style={{ width: '100%', maxWidth: 720, alignSelf: 'center' }}>
-          <LedMatrix frame={frame} />
+          <LedMatrix frame={frame} mode={mode} />
         </div>
 
         <div className="toolbar">
+          <select id="display-type" aria-label="Display type" value={mode} onChange={(e) => changeMode(e.target.value as DisplayMode)}>
+            <option value="mono">Bicolor (current)</option>
+            <option value="rgb">Multicolor (RGB)</option>
+          </select>
           <button onClick={() => setPlaying((p) => !p)}>{playing ? 'Pause' : 'Play'}</button>
           <button disabled={playing} onClick={() => setIndex((i) => (i - 1 + frames.length) % frames.length)}>
             ◀ Step
@@ -114,7 +143,7 @@ export default function Home() {
               </option>
             ))}
           </select>
-          <button onClick={copyFrame}>Copy frame (0/1 JSON)</button>
+          <button onClick={copyFrame}>Copy frame ({mode === 'rgb' ? '0xRRGGBB' : '0/1'} JSON)</button>
           <button onClick={copyAll}>Copy all frames</button>
         </div>
 
@@ -164,7 +193,7 @@ export default function Home() {
           onSubmit={(e) => {
             e.preventDefault();
             if (!input.trim()) return;
-            sendMessage({ text: input });
+            send(input);
             setInput('');
           }}
         >
@@ -177,7 +206,7 @@ export default function Home() {
           <div className="suggestions">
             {suggestions.length === 0 && <span className="muted">Thinking of ideas…</span>}
             {suggestions.map((s) => (
-              <button key={s} type="button" className="suggestion" disabled={busy} onClick={() => sendMessage({ text: s })}>
+              <button key={s} type="button" className="suggestion" disabled={busy} onClick={() => send(s)}>
                 {s}
               </button>
             ))}

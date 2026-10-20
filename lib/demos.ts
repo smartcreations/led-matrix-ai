@@ -29,6 +29,19 @@ ctx.fill();`,
 }`,
   },
   {
+    title: 'Rainbow plasma',
+    fps: 20,
+    durationMs: 4000,
+    code: `const a = 2 * Math.PI * p;
+for (let y = 0; y < h; y++) {
+  for (let x = 0; x < w; x++) {
+    const v = Math.sin(x / 7 + a) + Math.sin(y / 5 - a) + Math.sin((x + y) / 9 + a);
+    const hue = Math.round(((v + 3) / 6) * 360 + p * 360) % 360;
+    setPixel(x, y, \`hsl(\${hue}, 100%, 50%)\`);
+  }
+}`,
+  },
+  {
     title: 'Rain',
     fps: 20,
     durationMs: 3000,

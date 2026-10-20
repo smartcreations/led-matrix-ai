@@ -3,22 +3,25 @@
 import { useEffect, useRef } from 'react';
 
 type Props = {
-  /** Rows of 0/1 values. Every row should have the same length. */
+  /** Rows of values: 0/1 in mono mode, packed 0xRRGGBB in rgb mode. Every row should have the same length. */
   frame: number[][];
+  mode?: 'mono' | 'rgb';
   dotSize?: number;
   gap?: number;
   onColor?: string;
   offColor?: string;
 };
 
-/** Draws a 2D array of 0s and 1s as a dot-matrix LED panel. */
+/** Draws a 2D array of LED values as a dot-matrix LED panel. */
 export default function LedMatrix({
   frame,
+  mode = 'mono',
   dotSize = 6,
   gap = 2,
   onColor = '#ff3b2f',
-  offColor = '#2a0d0b',
+  offColor,
 }: Props) {
+  const off = offColor ?? (mode === 'rgb' ? '#1c1c1c' : '#2a0d0b');
   const ref = useRef<HTMLCanvasElement>(null);
   const rows = frame.length;
   const cols = frame[0]?.length ?? 0;
@@ -32,13 +35,14 @@ export default function LedMatrix({
     const r = dotSize / 2;
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        ctx.fillStyle = frame[y][x] ? onColor : offColor;
+        const v = frame[y][x];
+        ctx.fillStyle = !v ? off : mode === 'rgb' ? `#${v.toString(16).padStart(6, '0')}` : onColor;
         ctx.beginPath();
         ctx.arc(gap + x * pitch + r, gap + y * pitch + r, r, 0, Math.PI * 2);
         ctx.fill();
       }
     }
-  }, [frame, rows, cols, pitch, dotSize, gap, onColor, offColor]);
+  }, [frame, mode, rows, cols, pitch, dotSize, gap, onColor, off]);
 
   return (
     <canvas

@@ -3,7 +3,13 @@ import { FONT_5X7 } from './font';
 export const WIDTH = 60;
 export const HEIGHT = 32;
 
-/** One frame: HEIGHT rows of WIDTH values, each 0 (off) or 1 (on). */
+/** Bicolor panels show one LED color (on/off); multicolor panels show any RGB color. */
+export type DisplayMode = 'mono' | 'rgb';
+
+/**
+ * One frame: HEIGHT rows of WIDTH values.
+ * mono: each value is 0 (off) or 1 (on). rgb: each value is a packed 0xRRGGBB color, 0 is off.
+ */
 export type Frame = number[][];
 
 export type Animation = {
@@ -21,13 +27,14 @@ for (const k of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'importS
   try { self[k] = undefined; } catch {}
 }
 self.onmessage = (e) => {
-  const { code, fps, durationMs, width, height } = e.data;
+  const { code, fps, durationMs, width, height, mode } = e.data;
   try {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    // on: truthy/falsy, or (in rgb mode) any CSS color string.
     const setPixel = (x, y, on = 1) => {
       const prev = ctx.fillStyle;
-      ctx.fillStyle = on ? '#fff' : '#000';
+      ctx.fillStyle = typeof on === 'string' ? on : on ? '#fff' : '#000';
       ctx.fillRect(Math.round(x), Math.round(y), 1, 1);
       ctx.fillStyle = prev;
     };
@@ -62,8 +69,14 @@ self.onmessage = (e) => {
         const row = new Array(width);
         for (let x = 0; x < width; x++) {
           const k = (y * width + x) * 4;
-          const lum = ((0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2]) * d[k + 3]) / 255;
-          row[x] = lum > 127 ? 1 : 0;
+          if (mode === 'rgb') {
+            const a = d[k + 3] / 255;
+            const r = Math.round(d[k] * a), g = Math.round(d[k + 1] * a), b = Math.round(d[k + 2] * a);
+            row[x] = Math.max(r, g, b) < 8 ? 0 : (r << 16) | (g << 8) | b;
+          } else {
+            const lum = ((0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2]) * d[k + 3]) / 255;
+            row[x] = lum > 127 ? 1 : 0;
+          }
         }
         rows.push(row);
       }
@@ -77,7 +90,7 @@ self.onmessage = (e) => {
 `;
 
 /** Renders an animation to an array of 0/1 frames, in a worker with a time limit. */
-export function renderAnimation(anim: Animation, timeoutMs = 4000): Promise<Frame[]> {
+export function renderAnimation(anim: Animation, mode: DisplayMode = 'mono', timeoutMs = 4000): Promise<Frame[]> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
     const worker = new Worker(url);
@@ -99,6 +112,6 @@ export function renderAnimation(anim: Animation, timeoutMs = 4000): Promise<Fram
       done();
       reject(new Error(e.message || 'Worker error'));
     };
-    worker.postMessage({ ...anim, width: WIDTH, height: HEIGHT });
+    worker.postMessage({ ...anim, width: WIDTH, height: HEIGHT, mode });
   });
 }

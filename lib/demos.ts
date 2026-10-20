@@ -1,6 +1,7 @@
 import type { Animation } from './animation';
 
-export const DEMOS: Animation[] = [
+/** Built-in demos; rgbOnly ones only make sense on a multicolor display. */
+export const DEMOS: (Animation & { rgbOnly?: boolean })[] = [
   {
     title: 'Scrolling text',
     fps: 30,
@@ -30,6 +31,7 @@ ctx.fill();`,
   },
   {
     title: 'Rainbow plasma',
+    rgbOnly: true,
     fps: 20,
     durationMs: 4000,
     code: `const a = 2 * Math.PI * p;

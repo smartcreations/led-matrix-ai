@@ -8,6 +8,25 @@ import { DEMOS } from '@/lib/demos';
 
 const BLANK: Frame = Array.from({ length: HEIGHT }, () => new Array(WIDTH).fill(0));
 const MODE_KEY = 'led-display-mode';
+const LAST_DEMO_KEY = 'led-last-demo';
+
+/** A random demo that suits the saved display type, avoiding the one shown last time. */
+function randomDemo(): Animation {
+  let rgb = false;
+  let last: string | null = null;
+  try {
+    rgb = localStorage.getItem(MODE_KEY) === 'rgb';
+    last = localStorage.getItem(LAST_DEMO_KEY);
+  } catch {}
+  const fits = DEMOS.filter((d) => rgb || !d.rgbOnly);
+  const fresh = fits.filter((d) => d.title !== last);
+  const pool = fresh.length ? fresh : fits;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  try {
+    localStorage.setItem(LAST_DEMO_KEY, pick.title);
+  } catch {}
+  return pick;
+}
 
 type ToolPart = {
   type: 'tool-createAnimation';
@@ -68,10 +87,15 @@ export default function Home() {
     }
   }, [mode]);
 
-  // First load, and re-render the current animation whenever the display type changes.
+  // Start with a random demo, and re-render the current animation whenever the display type changes.
   const current = useRef(anim);
+  const started = useRef(false);
   current.current = anim;
   useEffect(() => {
+    if (!started.current) {
+      started.current = true;
+      current.current = randomDemo();
+    }
     load(current.current);
   }, [load]);
 

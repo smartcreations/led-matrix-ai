@@ -1,6 +1,6 @@
 import { FONT_5X7 } from './font';
 
-export const WIDTH = 60;
+export const WIDTH = 64;
 export const HEIGHT = 32;
 
 /** Bicolor panels show one LED color (on/off); multicolor panels show any RGB color. */

@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { generateText, tool } from 'ai';
 import { HEIGHT, WIDTH, type Animation, type DisplayMode } from './animation';
 import { encodeAnimation } from './lmx';
-import { chatModel } from './models';
+import { deviceModel } from './models';
 import { animationSchema, systemPrompt } from './prompt';
 import { renderOnServer } from './renderServer';
 
@@ -49,7 +49,7 @@ export async function animationResponse(prompt: string, mode: DisplayMode, extra
 
 async function writeAnimation(prompt: string, mode: DisplayMode): Promise<Animation | null> {
   const { toolCalls } = await generateText({
-    model: chatModel,
+    model: deviceModel,
     system: systemPrompt(mode),
     prompt,
     tools: {

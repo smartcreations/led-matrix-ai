@@ -21,8 +21,10 @@
 #include <ESP_I2S.h>
 #include <LittleFS.h>
 #include <Wire.h>
+#include <esp_task_wdt.h>
 
 #include "connection.h"
+#include "sound.h"
 #include "wakeword.h"
 
 #define PANEL_W 64
@@ -47,6 +49,7 @@ HUB75_I2S_CFG::i2s_pins PINS = {
 #define I2S_BCLK 43
 #define I2S_WS 38
 #define I2S_DIN 39
+#define I2S_DOUT 21           // to the ES8311 speaker codec
 #define ES7210_ADDR 0x40
 #define MIC_RATE 16000
 #define MAX_SPEECH_S 10        // longest prompt it records
@@ -126,10 +129,10 @@ void saveToFlash(const Header &h, const uint16_t *buf) {
   File f = LittleFS.open(SAVE_PATH, "w");
   if (!f) { Serial.println("WARN could not save"); return; }
   f.write((const uint8_t *)&h, sizeof(h));
-  // Flash writes pause both cores; small pieces with breaks keep the watchdog happy.
-  for (uint32_t done = 0; done < h.length; done += 16384) {
-    f.write((const uint8_t *)buf + done, min((uint32_t)16384, h.length - done));
-    delay(2);
+  // Flash writes pause both cores; small pieces with breaks let the other tasks keep up.
+  for (uint32_t done = 0; done < h.length; done += 4096) {
+    f.write((const uint8_t *)buf + done, min((uint32_t)4096, h.length - done));
+    delay(3);
   }
   f.close();
 }
@@ -228,7 +231,7 @@ bool startMic() {
     if (!es7210Write(r[0], r[1])) { Serial.printf("WARN mic chip not answering at 0x%02X\n", ES7210_ADDR); return false; }
   Serial.println("mic chip configured");
 
-  mic.setPins(I2S_BCLK, I2S_WS, -1, I2S_DIN, I2S_MCLK);
+  mic.setPins(I2S_BCLK, I2S_WS, I2S_DOUT, I2S_DIN, I2S_MCLK);  // full duplex: mics in, speaker out
   if (!mic.begin(I2S_MODE_STD, MIC_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
     Serial.println("WARN mic I2S did not start");
     return false;
@@ -284,6 +287,7 @@ void listenTask(void *) {
       } else if (done) {
         speechSamples = recorded;
         speechReady = true;
+        playSound(SOUND_THINKING);
         listening = false;
         Serial.printf("Recorded %.1f s\n", recorded / (float)MIC_RATE);
       }
@@ -297,6 +301,7 @@ void listenTask(void *) {
     }
     if (heard && !speechReady && speech) {
       Serial.println("WAKE WORD");
+      playSound(SOUND_LISTENING);
       listening = true;
       recordStart = millis();
       recorded = speechMs = quietMs = 0;
@@ -363,6 +368,7 @@ void takeServerAnimation() {
   }
   memmove(data, data + sizeof(h), h.length);  // pixels to the start of the buffer, which play() owns
   play((uint16_t *)data, h.frames, h.fps);
+  playSound(SOUND_DONE);
   saveToFlash(h, anim);
   Serial.printf("Playing \"%s\": %u frames at %u fps\n", title.c_str(), h.frames, h.fps);
 }
@@ -404,7 +410,13 @@ void setup() {
     messageUntil = millis() + 2000;
   }
   if (!hasAnimation && !setupHotspotName()) showText("READY", "HEY BRO", panel->color565(255, 59, 47));
+  // Both cores stay busy on purpose (listening and requests on core 0, the animation loop on
+  // core 1), so their idle tasks can go seconds without running while flash is written.
+  // Don't reset the board for that.
+  esp_task_wdt_config_t wdt = {.timeout_ms = 5000, .idle_core_mask = 0, .trigger_panic = true};
+  esp_task_wdt_reconfigure(&wdt);
   bool micReady = startMic();
+  if (micReady) soundBegin(mic);
   if (micReady) xTaskCreatePinnedToCore(listenTask, "listen", 8192, nullptr, 1, nullptr, 0);
   Serial.println(micReady ? "Mic listening" : "Mic unavailable");
   Serial.println("Ready for uploads");

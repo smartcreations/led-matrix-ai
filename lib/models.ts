@@ -9,6 +9,11 @@ export const chatModel = direct
   ? anthropic(process.env.LED_MODEL ?? 'claude-sonnet-5-5')
   : (process.env.LED_MODEL ?? 'anthropic/claude-sonnet-5.5');
 
+/** Writes the animations for the LED screens, where speed matters most. Override with DEVICE_MODEL. */
+export const deviceModel = direct
+  ? anthropic(process.env.DEVICE_MODEL ?? 'claude-haiku-5-5')
+  : (process.env.DEVICE_MODEL ?? 'anthropic/claude-haiku-5.5');
+
 /** Small, fast model for the starter suggestions. Override with SUGGESTIONS_MODEL. */
 export const suggestModel = direct
   ? anthropic(process.env.SUGGESTIONS_MODEL ?? 'claude-haiku-5-5')

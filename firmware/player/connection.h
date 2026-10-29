@@ -9,6 +9,13 @@ void networkBegin();
 // Serves the web pages. Call often from loop().
 void networkLoop();
 
+// For the phone app (see bluetooth.h).
+const char *deviceName();         // "LED-9990"
+String visibleNetworks();         // WiFi names seen in the last scan, one per line
+void refreshNetworks();           // starts a background scan, when it won't disturb anything
+void joinWifi(const String &ssid, const String &password);  // saves it and connects
+String statusJson();              // {"name","wifi","ssid","ip","busy"}
+
 // True once when the saved WiFi connects after the setup hotspot had to start.
 bool takeJustConnected();
 

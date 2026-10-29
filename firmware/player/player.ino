@@ -23,6 +23,7 @@
 #include <Wire.h>
 #include <esp_task_wdt.h>
 
+#include "bluetooth.h"
 #include "connection.h"
 #include "sound.h"
 #include "wakeword.h"
@@ -400,6 +401,7 @@ void setup() {
   bool hasAnimation = loadFromFlash();
   showText("WIFI", "...", panel->color565(0, 120, 255));
   networkBegin();
+  bluetoothBegin(deviceName());
   if (setupHotspotName()) {
     messageLines[0] = "JOIN WIFI";
     messageLines[1] = setupHotspotName();

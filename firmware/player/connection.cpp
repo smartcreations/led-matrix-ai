@@ -1,4 +1,5 @@
 #include "connection.h"
+#include "bluetooth.h"
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
@@ -30,6 +31,8 @@ static bool resultReady = false;
 static uint8_t *resultData = nullptr;
 static size_t resultLength = 0;
 static String resultTitle, resultError;
+
+static String jsonString(const String &s);
 
 // ---- settings ----
 
@@ -77,19 +80,23 @@ static String page(const String &title, const String &body) {
 
 // Nearby WiFi names, scanned once before the hotspot starts: scanning while it runs makes the
 // radio leave the hotspot's channel and drops the phone.
-static String networkOptions;
+static String networkOptions;  // for the setup page
+static String networkNames;    // for the app: one per line, strongest first
 
-static void scanNetworks() {
-  int found = WiFi.scanNetworks();
+static void collectScan(int found) {
   networkOptions = "";
+  networkNames = "";
   for (int i = 0; i < found; i++) {
     String n = WiFi.SSID(i);
-    if (n.length() && networkOptions.indexOf("value=\"" + escapeHtml(n) + "\"") < 0)
-      networkOptions += "<option value=\"" + escapeHtml(n) + "\"" + (n == ssid ? " selected" : "") + ">" + escapeHtml(n) + "</option>";
+    if (!n.length() || networkNames.indexOf(n + "\n") == 0 || networkNames.indexOf("\n" + n + "\n") >= 0) continue;
+    networkNames += n + "\n";
+    networkOptions += "<option value=\"" + escapeHtml(n) + "\"" + (n == ssid ? " selected" : "") + ">" + escapeHtml(n) + "</option>";
   }
   WiFi.scanDelete();
   Serial.printf("Found %d WiFi networks\n", found);
 }
+
+static void scanNetworks() { collectScan(WiFi.scanNetworks()); }
 
 static void sendSetupPage() {
   String options = networkOptions;
@@ -134,11 +141,25 @@ static void handlePrompt() {
 
 // ---- WiFi ----
 
+// Tells phones joining the hotspot where the setup page is (DHCP option 114, "captive portal"),
+// so Android and iOS open it by themselves, like a hotel WiFi login.
+static void announceSetupPage() {
+  static char uri[32];
+  snprintf(uri, sizeof(uri), "http://%s/", WiFi.softAPIP().toString().c_str());
+  esp_netif_t *ap = WiFi.AP.netif();
+  esp_netif_dhcps_stop(ap);
+  esp_netif_dhcps_option(ap, ESP_NETIF_OP_SET, ESP_NETIF_CAPTIVEPORTAL_URI, uri, strlen(uri));
+  esp_netif_dhcps_start(ap);
+}
+
 static void startSetupHotspot() {
-  WiFi.mode(WIFI_AP_STA);
+  WiFi.setAutoReconnect(false);  // retries make the radio hop channels and drop the phone
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
   scanNetworks();
+  WiFi.mode(WIFI_AP);
   WiFi.softAP(name);
-  if (ssid.length()) WiFi.begin(ssid.c_str(), password.c_str());  // keep trying the saved WiFi
+  announceSetupPage();
   dns.start(53, "*", WiFi.softAPIP());  // every address leads to the setup page
   inSetup = true;
   WiFi.onEvent([](arduino_event_t *e) { Serial.println("Setup hotspot: a phone joined"); }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
@@ -147,6 +168,11 @@ static void startSetupHotspot() {
 }
 
 static bool justConnected = false;
+
+// Joining a WiFi sent from the app: networkLoop() does the work, outside the Bluetooth task.
+static volatile bool joinRequested = false;
+static uint32_t joinStarted = 0;
+static const char *wifiState = "none";  // for the app: none, connecting, connected, failed
 
 static void startMdns() {
   String host = String(name);
@@ -174,6 +200,7 @@ void networkBegin() {
   }
   // If the saved WiFi is just slow or down (a router restart), the hotspot offers setup while
   // the screen keeps trying it in the background; networkLoop() switches over when it connects.
+  wifiState = connected ? "connected" : ssid.length() ? "failed" : "none";
   if (connected) startMdns();
   else startSetupHotspot();
 
@@ -194,25 +221,100 @@ void networkBegin() {
       return;
     }
     web.sendHeader("Location", "http://" + self + "/");
+    web.sendHeader("Cache-Control", "no-store");
     web.send(302, "text/plain", "");
   });
   web.begin();
 }
 
 void networkLoop() {
+  if (joinRequested) {
+    joinRequested = false;
+    if (inSetup) {
+      dns.stop();
+      WiFi.softAPdisconnect(true);
+      inSetup = false;
+    }
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(ssid.c_str(), password.c_str());
+    joinStarted = millis();
+    wifiState = "connecting";
+    bluetoothNotifyStatus();
+    Serial.printf("Joining WiFi \"%s\" (from the app)\n", ssid.c_str());
+  }
+  if (joinStarted) {
+    if (WiFi.status() == WL_CONNECTED) {
+      joinStarted = 0;
+      wifiState = "connected";
+      startMdns();
+      justConnected = true;
+      bluetoothNotifyStatus();
+      Serial.printf("WiFi \"%s\" connected: http://%s\n", ssid.c_str(), WiFi.localIP().toString().c_str());
+    } else if (millis() - joinStarted > 20000) {
+      joinStarted = 0;
+      wifiState = "failed";
+      bluetoothNotifyStatus();
+      Serial.printf("WiFi \"%s\" did not connect\n", ssid.c_str());
+      startSetupHotspot();
+    }
+  }
+  int scanned = WiFi.scanComplete();
+  if (scanned >= 0) collectScan(scanned);
   if (inSetup) {
     dns.processNextRequest();
+    // Every minute that no phone is on the hotspot, give the saved WiFi 15 s (it may just have
+    // been slow after a power cut). Never while a phone is on it: trying hops channels.
+    static uint32_t idleSince = millis(), tryingSince = 0;
+    bool phoneOn = WiFi.softAPgetStationNum() > 0;
+    if (phoneOn) idleSince = millis();
+    if (tryingSince && WiFi.status() != WL_CONNECTED && (phoneOn || millis() - tryingSince > CONNECT_TIMEOUT_MS)) {
+      WiFi.disconnect();
+      WiFi.mode(WIFI_AP);
+      tryingSince = 0;
+      idleSince = millis();
+    } else if (!tryingSince && !phoneOn && ssid.length() && millis() - idleSince > 60000) {
+      WiFi.mode(WIFI_AP_STA);
+      WiFi.begin(ssid.c_str(), password.c_str());
+      tryingSince = millis();
+    }
     if (ssid.length() && WiFi.status() == WL_CONNECTED) {
       dns.stop();
       WiFi.softAPdisconnect(true);
       WiFi.mode(WIFI_STA);
+      WiFi.setAutoReconnect(true);
       inSetup = false;
       startMdns();
       justConnected = true;
+      wifiState = "connected";
+      bluetoothNotifyStatus();
       Serial.printf("WiFi \"%s\" connected after all: http://%s\n", ssid.c_str(), WiFi.localIP().toString().c_str());
     }
   }
   web.handleClient();
+}
+
+const char *deviceName() { return name; }
+
+String visibleNetworks() { return networkNames; }
+
+void refreshNetworks() {
+  if (!inSetup && !joinStarted && WiFi.scanComplete() != WIFI_SCAN_RUNNING) WiFi.scanNetworks(true);
+}
+
+void joinWifi(const String &newSsid, const String &newPassword) {
+  ssid = newSsid;
+  password = newPassword;
+  saveSetting("ssid", ssid);
+  saveSetting("pass", password);
+  joinRequested = true;
+}
+
+String statusJson() {
+  String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
+  return "{\"name\":" + jsonString(name) + ",\"wifi\":\"" + wifiState + "\",\"ssid\":" + jsonString(ssid) +
+         ",\"ip\":\"" + ip + "\",\"busy\":" + (busy ? "true" : "false") + "}";
 }
 
 bool takeJustConnected() {
@@ -283,6 +385,7 @@ static void finish(uint8_t *data, size_t length, const String &title, const Stri
   xSemaphoreGive(lock);
   status = error.length() ? "Error: " + error : "Showing “" + title + "”";
   busy = false;
+  bluetoothNotifyStatus();
 }
 
 static void fetch() {

@@ -72,8 +72,10 @@ bool wakeWordBegin() {
   ops.AddSplitV();
 
   // The streaming model keeps its state in resource variables, which also live in the arena.
-  const size_t arenaSize = WAKEWORD_ARENA + 16384;
+  // Internal RAM is fastest; PSRAM works too when WiFi and Bluetooth have taken most of it.
+  const size_t arenaSize = WAKEWORD_ARENA + 4096;
   uint8_t *arena = (uint8_t *)heap_caps_aligned_alloc(16, arenaSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!arena) arena = (uint8_t *)heap_caps_aligned_alloc(16, arenaSize, MALLOC_CAP_SPIRAM);
   if (!arena) { Serial.println("WARN wake word: no memory for the model"); return false; }
   tflite::MicroAllocator *allocator = tflite::MicroAllocator::Create(arena, arenaSize);
   tflite::MicroResourceVariables *variables = tflite::MicroResourceVariables::Create(allocator, 20);

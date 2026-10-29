@@ -54,7 +54,7 @@ export async function animationResponse(...args: Parameters<typeof makeAnimation
   } catch (e) {
     // The screen prints the start of the reply, so the cause shows up in its log too.
     console.error('[device] failed:', e);
-    return new Response(`Failed: ${(e as Error).message}`.slice(0, 200), { status: 500 });
+    return new Response(`Failed: ${(e as Error).message}\n${(e as Error).stack ?? ""}`.slice(0, 1000), { status: 500 });
   }
 }
 

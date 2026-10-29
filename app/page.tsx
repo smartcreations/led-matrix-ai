@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import LedMatrix from '@/components/LedMatrix';
 import { HEIGHT, WIDTH, renderAnimation, type Animation, type DisplayMode, type Frame } from '@/lib/animation';
 import { DEMOS } from '@/lib/demos';
+import { sendToPanel, serialSupported } from '@/lib/panelSerial';
 
 const BLANK: Frame = Array.from({ length: HEIGHT }, () => new Array(WIDTH).fill(0));
 const MODE_KEY = 'led-display-mode';
@@ -44,6 +45,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<DisplayMode>('mono');
+  const [panelStatus, setPanelStatus] = useState<{ state: 'idle' | 'sending' | 'sent' | 'error'; text?: string }>({
+    state: 'idle',
+  });
+  const [canSend, setCanSend] = useState(false);
+  useEffect(() => setCanSend(serialSupported()), []);
   const applied = useRef(new Set<string>());
   const { messages, sendMessage, status, error: chatError } = useChat();
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -127,6 +133,19 @@ export default function Home() {
 
   const busy = status === 'submitted' || status === 'streaming';
 
+  // Sends the current animation to the physical panel over USB.
+  const sendPanel = async () => {
+    setPanelStatus({ state: 'sending' });
+    try {
+      await sendToPanel(frames, anim.fps, mode);
+      setPanelStatus({ state: 'sent', text: `“${anim.title}” is playing on the panel.` });
+    } catch (e) {
+      const err = e as Error;
+      if (err.name === 'NotFoundError') setPanelStatus({ state: 'idle' }); // picker closed
+      else setPanelStatus({ state: 'error', text: err.message });
+    }
+  };
+
   return (
     <main className="app">
       <section className="panel stage">
@@ -169,7 +188,16 @@ export default function Home() {
           </select>
           <button onClick={copyFrame}>Copy frame ({mode === 'rgb' ? '0xRRGGBB' : '0/1'} JSON)</button>
           <button onClick={copyAll}>Copy all frames</button>
+          <button
+            onClick={sendPanel}
+            disabled={!canSend || panelStatus.state === 'sending' || frames.length < 1}
+            title={canSend ? 'Plays this animation on the LED panel connected by USB' : 'Sending to the panel needs Chrome or Edge'}
+          >
+            {panelStatus.state === 'sending' ? 'Sending…' : 'Send to panel (USB)'}
+          </button>
         </div>
+        {panelStatus.state === 'sent' && <div className="muted">{panelStatus.text}</div>}
+        {panelStatus.state === 'error' && <div className="error">{panelStatus.text}</div>}
 
         <div className="toolbar" style={{ justifyContent: 'space-between' }}>
           <span className="muted">

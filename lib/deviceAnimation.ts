@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { generateText, tool } from 'ai';
 import { HEIGHT, WIDTH, type Animation, type DisplayMode } from './animation';
 import { encodeAnimation } from './lmx';
@@ -85,12 +86,17 @@ export async function animationResponse(
     }
     try {
       const frames = await renderOnServer(anim, mode);
-      const body = encodeAnimation(frames, anim.fps, mode);
+      const raw = encodeAnimation(frames, anim.fps, mode);
+      // Raw frames are ~4 KB each and mostly black; screens that can unpack zlib get a reply
+      // 5-20x smaller, which matters most on a slow hotspot.
+      const zlib = req.headers.get('x-accept-compression')?.includes('zlib');
+      const body = zlib ? deflateSync(raw, { level: 9 }) : Buffer.from(raw);
       lap('render');
-      return new Response(Buffer.from(body), {
+      return new Response(body, {
         headers: {
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(body.length),
+          ...(zlib && { 'X-Compression': 'zlib', 'X-Uncompressed-Length': String(raw.length) }),
           'X-Animation-Title': encodeURIComponent(anim.title),
           'X-Route': route,
           'Server-Timing': report(`${route}: "${anim.title}"`),

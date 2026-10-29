@@ -1,6 +1,7 @@
 #include "connection.h"
 #include "version.h"
 #include <mbedtls/platform.h>
+#include <miniz.h>  // the zlib decoder in the chip's ROM
 #include "bluetooth.h"
 
 #include <DNSServer.h>
@@ -401,6 +402,24 @@ static void finish(uint8_t *data, size_t length, const String &title, const Stri
   bluetoothNotifyStatus();
 }
 
+// Unpacks a zlib reply into a new PSRAM buffer of exactly `length` bytes, or returns null.
+static uint8_t *inflate(const uint8_t *data, size_t size, size_t length) {
+  if (length > MAX_REPLY) return nullptr;
+  uint8_t *out = (uint8_t *)ps_malloc(length);
+  tinfl_decompressor *state = (tinfl_decompressor *)ps_malloc(sizeof(tinfl_decompressor));  // ~11 KB
+  bool ok = false;
+  if (out && state) {
+    tinfl_init(state);
+    size_t in = size, produced = length;
+    tinfl_status status = tinfl_decompress(state, data, &in, out, out, &produced,
+                                           TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    ok = status == TINFL_STATUS_DONE && produced == length;
+  }
+  free(state);
+  if (!ok) free(out);
+  return ok ? out : nullptr;
+}
+
 static void fetch() {
   NetworkClientSecure secure;
   NetworkClient plain;
@@ -417,8 +436,9 @@ static void fetch() {
   http.addHeader("Content-Type", pendingType);
   http.addHeader("Authorization", "Bearer " + deviceKey);
   if (bypass.length()) http.addHeader("x-vercel-protection-bypass", bypass);
-  const char *headers[] = {"X-Animation-Title", "X-Prompt", "Server-Timing"};
-  http.collectHeaders(headers, 3);
+  http.addHeader("X-Accept-Compression", "zlib");
+  const char *headers[] = {"X-Animation-Title", "X-Prompt", "Server-Timing", "X-Uncompressed-Length"};
+  http.collectHeaders(headers, 4);
   uint32_t started = millis();
 
   int code = pendingAudio ? http.POST(pendingAudio, pendingAudioLength) : http.POST(pendingJson);
@@ -439,10 +459,16 @@ static void fetch() {
   String title = urlDecode(http.header("X-Animation-Title"));
   if (http.hasHeader("X-Prompt")) Serial.printf("Heard: %s\n", urlDecode(http.header("X-Prompt")).c_str());
   Serial.printf("Server took %s; %u ms in all, %d bytes\n", http.header("Server-Timing").c_str(), millis() - started, written);
+  size_t unpackedLength = http.header("X-Uncompressed-Length").toInt();
   http.end();
   if (written < 0 || sink.failed) {
     free(sink.data);
     finish(nullptr, 0, "", sink.failed ? "reply too big or out of memory" : "download failed: " + http.errorToString(written));
+  } else if (unpackedLength) {
+    uint8_t *unpacked = inflate(sink.data, sink.length, unpackedLength);
+    free(sink.data);
+    if (unpacked) finish(unpacked, unpackedLength, title, "");
+    else finish(nullptr, 0, "", "couldn't unpack the reply");
   } else {
     finish(sink.data, sink.length, title, "");
   }

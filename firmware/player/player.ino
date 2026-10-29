@@ -100,8 +100,11 @@ void drawFrame(uint16_t i) {
   panel->flipDMABuffer();
 }
 
+void stopSaving();
+
 // Takes ownership of a buffer of `frames` frames and starts playing it.
 void play(uint16_t *buf, uint16_t frames, uint8_t fps) {
+  stopSaving();  // it may still be saving the animation that's about to be freed
   if (anim) free(anim);
   anim = buf;
   animFrames = frames;
@@ -127,16 +130,39 @@ bool validHeader(const Header &h) {
          h.frames <= MAX_FRAMES && h.fps > 0 && h.fps <= 60 && h.length == (uint32_t)h.frames * PANEL_W * PANEL_H * 2;
 }
 
+// Saving runs a piece at a time from loop(), between frames: written in one go, a 300 KB+
+// animation froze the screen for seconds before its first frame.
+struct {
+  File file;
+  const uint8_t *data = nullptr;
+  uint32_t done = 0, length = 0;
+} saving;
+
+void stopSaving() {
+  if (saving.data) saving.file.close();  // a half-written file fails the length check on boot
+  saving.data = nullptr;
+}
+
 void saveToFlash(const Header &h, const uint16_t *buf) {
-  File f = LittleFS.open(SAVE_PATH, "w");
-  if (!f) { Serial.println("WARN could not save"); return; }
-  f.write((const uint8_t *)&h, sizeof(h));
-  // Flash writes pause both cores; small pieces with breaks let the other tasks keep up.
-  for (uint32_t done = 0; done < h.length; done += 4096) {
-    f.write((const uint8_t *)buf + done, min((uint32_t)4096, h.length - done));
-    delay(3);
+  stopSaving();
+  saving.file = LittleFS.open(SAVE_PATH, "w");
+  if (!saving.file) { Serial.println("WARN could not save"); return; }
+  saving.file.write((const uint8_t *)&h, sizeof(h));
+  saving.data = (const uint8_t *)buf;
+  saving.done = 0;
+  saving.length = h.length;
+}
+
+// Writes the next 4 KB of the animation being saved. Flash writes pause both cores briefly.
+void continueSaving() {
+  if (!saving.data) return;
+  uint32_t n = min((uint32_t)4096, saving.length - saving.done);
+  saving.file.write(saving.data + saving.done, n);
+  saving.done += n;
+  if (saving.done >= saving.length) {
+    saving.file.close();
+    saving.data = nullptr;
   }
-  f.close();
 }
 
 bool loadFromFlash() {
@@ -440,6 +466,7 @@ void setup() {
 void loop() {
   if (!panel) { delay(1000); return; }
   checkForUpload();
+  continueSaving();
   networkLoop();
   if (takeJustConnected()) {
     messageForever = false;

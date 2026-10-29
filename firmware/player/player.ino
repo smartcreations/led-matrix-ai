@@ -26,6 +26,7 @@
 #include "bluetooth.h"
 #include "connection.h"
 #include "sound.h"
+#include "version.h"
 #include "wakeword.h"
 
 #define PANEL_W 64
@@ -387,7 +388,7 @@ void setup() {
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);  // never stall the animation when no computer is reading the logs
   delay(300);
-  Serial.println("\nLED Matrix Studio player starting");
+  Serial.printf("\nLED Matrix Studio player %s starting\n", FIRMWARE_VERSION);
 
   HUB75_I2S_CFG cfg(PANEL_W, PANEL_H, 1, PINS);
   cfg.clkphase = false;
@@ -398,6 +399,9 @@ void setup() {
   panel->setBrightness8(BRIGHTNESS);
 
   if (!LittleFS.begin(true)) Serial.println("WARN flash storage unavailable");
+  // Boot screen with the firmware version at the bottom, so it's clear which build is running.
+  showText("LED MATRIX", "V" FIRMWARE_VERSION, panel->color565(255, 59, 47));
+  delay(1500);
   bool hasAnimation = loadFromFlash();
   showText("WIFI", "...", panel->color565(0, 120, 255));
   networkBegin();

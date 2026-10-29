@@ -1,4 +1,5 @@
 #include "connection.h"
+#include "version.h"
 #include "bluetooth.h"
 
 #include <DNSServer.h>
@@ -314,7 +315,8 @@ void joinWifi(const String &newSsid, const String &newPassword) {
 String statusJson() {
   String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
   return "{\"name\":" + jsonString(name) + ",\"wifi\":\"" + wifiState + "\",\"ssid\":" + jsonString(ssid) +
-         ",\"ip\":\"" + ip + "\",\"busy\":" + (busy ? "true" : "false") + "}";
+         ",\"ip\":\"" + ip + "\",\"busy\":" + (busy ? "true" : "false") +
+         ",\"version\":\"" FIRMWARE_VERSION "\"}";
 }
 
 bool takeJustConnected() {

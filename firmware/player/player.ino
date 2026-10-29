@@ -414,6 +414,11 @@ void loop() {
   if (!panel) { delay(1000); return; }
   checkForUpload();
   networkLoop();
+  if (takeJustConnected()) {
+    messageForever = false;
+    showText("WIFI OK", "", panel->color565(0, 200, 80));
+    messageUntil = millis() + 2000;
+  }
   takeServerAnimation();
   if (speechReady) {
     if (!requestFromSpeech(speech, speechSamples, MIC_RATE)) Serial.println("Can't send the prompt: no WiFi or server");

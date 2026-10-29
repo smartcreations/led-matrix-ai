@@ -138,11 +138,20 @@ static void startSetupHotspot() {
   WiFi.mode(WIFI_AP_STA);
   scanNetworks();
   WiFi.softAP(name);
+  if (ssid.length()) WiFi.begin(ssid.c_str(), password.c_str());  // keep trying the saved WiFi
   dns.start(53, "*", WiFi.softAPIP());  // every address leads to the setup page
   inSetup = true;
   WiFi.onEvent([](arduino_event_t *e) { Serial.println("Setup hotspot: a phone joined"); }, ARDUINO_EVENT_WIFI_AP_STACONNECTED);
   WiFi.onEvent([](arduino_event_t *e) { Serial.println("Setup hotspot: phone got an address"); }, ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED);
   Serial.printf("Setup hotspot \"%s\" at http://%s\n", name, WiFi.softAPIP().toString().c_str());
+}
+
+static bool justConnected = false;
+
+static void startMdns() {
+  String host = String(name);
+  host.toLowerCase();
+  if (MDNS.begin(host.c_str())) MDNS.addService("http", "tcp", 80);
 }
 
 void networkBegin() {
@@ -163,13 +172,10 @@ void networkBegin() {
     Serial.printf(connected ? "WiFi \"%s\" connected: http://%s\n" : "WiFi \"%s\" did not connect\n", ssid.c_str(),
                   WiFi.localIP().toString().c_str());
   }
-  if (connected) {
-    String host = String(name);
-    host.toLowerCase();
-    if (MDNS.begin(host.c_str())) MDNS.addService("http", "tcp", 80);
-  } else {
-    startSetupHotspot();
-  }
+  // If the saved WiFi is just slow or down (a router restart), the hotspot offers setup while
+  // the screen keeps trying it in the background; networkLoop() switches over when it connects.
+  if (connected) startMdns();
+  else startSetupHotspot();
 
   web.on("/", [] {
     Serial.printf("Web page requested by %s\n", web.client().remoteIP().toString().c_str());
@@ -196,8 +202,23 @@ void networkBegin() {
 void networkLoop() {
   if (inSetup) {
     dns.processNextRequest();
+    if (ssid.length() && WiFi.status() == WL_CONNECTED) {
+      dns.stop();
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      inSetup = false;
+      startMdns();
+      justConnected = true;
+      Serial.printf("WiFi \"%s\" connected after all: http://%s\n", ssid.c_str(), WiFi.localIP().toString().c_str());
+    }
   }
   web.handleClient();
+}
+
+bool takeJustConnected() {
+  bool was = justConnected;
+  justConnected = false;
+  return was;
 }
 
 const char *setupHotspotName() { return inSetup ? name : nullptr; }

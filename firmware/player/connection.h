@@ -9,6 +9,9 @@ void networkBegin();
 // Serves the web pages. Call often from loop().
 void networkLoop();
 
+// True once when the saved WiFi connects after the setup hotspot had to start.
+bool takeJustConnected();
+
 // The setup hotspot's name while it is running, else nullptr.
 const char *setupHotspotName();
 

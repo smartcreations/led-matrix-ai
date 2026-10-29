@@ -54,7 +54,7 @@ export async function animationResponse(...args: Parameters<typeof makeAnimation
   } catch (e) {
     // The screen prints the start of the reply, so the cause shows up in its log too.
     console.error('[device] failed:', e);
-    return new Response(`Failed: ${(e as Error).message}\n${(e as Error).stack ?? ""}`.slice(0, 1000), { status: 500 });
+    return new Response(`Failed: ${(e as Error).message}`.slice(0, 200), { status: 500 });
   }
 }
 
@@ -125,6 +125,7 @@ async function makeAnimation(
     try {
       const rendered = await renderOnServer(anim, mode);
       frames = rendered.frames;
+      if (!frames.length) throw new Error('No frames were drawn');
       problem = checkText(rendered.texts, anim);
       lap('render');
     } catch (e) {
@@ -169,5 +170,16 @@ async function writeAnimation(
     },
   });
   const call = toolCalls.find((c) => c.toolName === 'createAnimation');
-  return call ? (call.input as Animation) : null;
+  if (!call) return null;
+  // The model sometimes goes past the schema's limits (a 25 s scroll, no fps); clamp instead of
+  // rendering zero frames.
+  const input = call.input as Partial<Animation>;
+  const clamp = (v: unknown, min: number, max: number, fallback: number) =>
+    Number.isFinite(Number(v)) ? Math.min(max, Math.max(min, Math.round(Number(v)))) : fallback;
+  return {
+    title: String(input.title ?? 'Animation'),
+    fps: clamp(input.fps, 1, 60, 15),
+    durationMs: clamp(input.durationMs, 100, 20000, 3000),
+    code: String(input.code ?? ''),
+  };
 }

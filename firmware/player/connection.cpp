@@ -16,7 +16,7 @@ static WebServer web(80);
 static DNSServer dns;
 static char name[16];          // "LED-4F2A": hotspot name and .local address
 static bool inSetup = false;
-static String ssid, password, serverUrl, deviceKey;
+static String ssid, password, serverUrl, deviceKey, bypass;  // bypass: Vercel deployment protection
 static String status = "Ready";
 
 // One request at a time: the prompt goes to fetchTask, its result comes back under `lock`.
@@ -40,6 +40,7 @@ static void loadSettings() {
   password = p.getString("pass", "");
   serverUrl = p.getString("server", "");
   deviceKey = p.getString("key", "");
+  bypass = p.getString("bypass", "");
   p.end();
 }
 
@@ -278,6 +279,7 @@ static void fetch() {
   http.setTimeout(65000);  // the most HTTPClient allows; writing the animation can take Claude 30 s+
   http.addHeader("Content-Type", pendingType);
   http.addHeader("Authorization", "Bearer " + deviceKey);
+  if (bypass.length()) http.addHeader("x-vercel-protection-bypass", bypass);
   const char *headers[] = {"X-Animation-Title", "X-Prompt"};
   http.collectHeaders(headers, 2);
 
@@ -403,6 +405,10 @@ bool networkCommand(const String &line) {
     saveSetting("key", arg);
     deviceKey = arg;
     Serial.println("OK key saved");
+  } else if (cmd == "BYPASS") {
+    saveSetting("bypass", arg);
+    bypass = arg;
+    Serial.println("OK bypass saved");
   } else if (cmd == "PROMPT") {
     Serial.println(requestAnimation(arg) ? "OK asking" : "ERR busy, offline or not set up");
   } else if (cmd == "NET") {

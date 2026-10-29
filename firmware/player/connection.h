@@ -27,4 +27,5 @@ bool takeRequestResult(uint8_t *&data, size_t &length, String &title, String &er
 
 // Handles setup commands typed on the USB serial port. Returns false if `line` isn't one.
 //   WIFI <name>|<password>   SERVER <https://...>   KEY <device key>   PROMPT <text>   NET
+//   BYPASS <secret>   (Vercel deployment protection bypass, if the site is protected)
 bool networkCommand(const String &line);

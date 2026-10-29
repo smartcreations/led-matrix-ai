@@ -79,13 +79,9 @@ static void soundTask(void *) {
     if (s == SOUND_LISTENING) {        // rising blip: "I'm listening"
       tone(880, 60, 0.8f);
       tone(1320, 90, 0.8f);
-    } else if (s == SOUND_THINKING) {  // falling blip: "got it, working on it"
+    } else {                           // falling blip: "got it, working on it"
       tone(1320, 60, 0.6f);
       tone(990, 90, 0.6f);
-    } else {                           // three quick notes up: "here it is"
-      tone(1047, 60, 0.6f);
-      tone(1319, 60, 0.6f);
-      tone(1568, 110, 0.6f);
     }
     silence(60);
   }

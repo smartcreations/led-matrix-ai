@@ -370,7 +370,6 @@ void takeServerAnimation() {
   }
   memmove(data, data + sizeof(h), h.length);  // pixels to the start of the buffer, which play() owns
   play((uint16_t *)data, h.frames, h.fps);
-  playSound(SOUND_DONE);
   saveToFlash(h, anim);
   Serial.printf("Playing \"%s\": %u frames at %u fps\n", title.c_str(), h.frames, h.fps);
 }

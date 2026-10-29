@@ -39,7 +39,8 @@ const deviceInstructions = (now: string) => `
 
 This display is a desk gadget people talk to. Always answer by calling createAnimation, never with text alone.
 If they ask a question (the time, a fact, a quick calculation), answer it on the display: the answer as large, readable text, scrolling sideways if it is wider than the display, with a small fitting illustration or effect.
-The current date and time where the display is: ${now}.`;
+The current date and time where the display is: ${now}.
+Speed matters: the person is waiting. Keep the code short (under 40 lines), and make one loop 2 to 5 seconds long at 15 to 20 fps.`;
 
 /**
  * Writes and draws an animation for `prompt` and replies with it in the upload format, with its
@@ -66,8 +67,13 @@ export async function animationResponse(
   };
 
   const now = localTime(req);
+  // Most prompts are things to draw, so drawing starts while the router decides; a question
+  // cancels it and draws the answer instead.
+  const cancelDraft = new AbortController();
+  const draft = writeAnimation(prompt, mode, now, cancelDraft.signal).catch(() => null);
   const route = await routePrompt(prompt);
   lap('route');
+  if (route !== 'draw') cancelDraft.abort();
   let drawPrompt = prompt;
   if (route === 'answer') {
     const brief = await answerPrompt(prompt, now, screenPlace(req));
@@ -78,7 +84,8 @@ export async function animationResponse(
 
   let feedback = '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    const anim = await writeAnimation(drawPrompt + feedback, mode, now);
+    const anim =
+      attempt === 0 && route === 'draw' ? await draft : await writeAnimation(drawPrompt + feedback, mode, now);
     lap('write');
     if (!anim) {
       report('no animation');
@@ -112,9 +119,15 @@ export async function animationResponse(
   return new Response('The animation could not be drawn', { status: 502 });
 }
 
-async function writeAnimation(prompt: string, mode: DisplayMode, now: string): Promise<Animation | null> {
+async function writeAnimation(
+  prompt: string,
+  mode: DisplayMode,
+  now: string,
+  abortSignal?: AbortSignal,
+): Promise<Animation | null> {
   const { toolCalls } = await generateText({
     model: deviceModel,
+    abortSignal,
     system: systemPrompt(mode) + deviceInstructions(now),
     toolChoice: { type: 'tool', toolName: 'createAnimation' },
     prompt,

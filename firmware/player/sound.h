@@ -3,7 +3,7 @@
 #pragma once
 #include <ESP_I2S.h>
 
-enum Sound { SOUND_LISTENING, SOUND_THINKING, SOUND_DONE };
+enum Sound { SOUND_LISTENING, SOUND_THINKING };
 
 // Sets up the speaker side of the codec. `i2s` must already run in full duplex.
 bool soundBegin(I2SClass &i2s);

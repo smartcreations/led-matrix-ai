@@ -53,7 +53,8 @@ Reply in plain text (no markdown) with only a brief for the person who draws the
     tools: {
       web_search: anthropic.tools.webSearch_20250305({
         maxUses: 3,
-        userLocation: { type: 'approximate', city: place.city, region: place.region, country: place.country, timezone: place.timezone },
+        // Anthropic rejects an empty location (no Vercel headers when running locally).
+        ...(Object.values(place).some(Boolean) && { userLocation: { type: 'approximate' as const, ...place } }),
       }),
     },
     stopWhen: stepCountIs(4),

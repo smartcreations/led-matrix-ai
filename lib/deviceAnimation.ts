@@ -48,7 +48,17 @@ Speed matters: the person is waiting. Keep the code short (under 40 lines), and 
  * title (and `extraHeaders`) as headers. If the first code doesn't render, Claude gets the error
  * and one more try.
  */
-export async function animationResponse(
+export async function animationResponse(...args: Parameters<typeof makeAnimation>) {
+  try {
+    return await makeAnimation(...args);
+  } catch (e) {
+    // The screen prints the start of the reply, so the cause shows up in its log too.
+    console.error('[device] failed:', e);
+    return new Response(`Failed: ${(e as Error).message}`.slice(0, 200), { status: 500 });
+  }
+}
+
+async function makeAnimation(
   req: Request,
   prompt: string,
   mode: DisplayMode,

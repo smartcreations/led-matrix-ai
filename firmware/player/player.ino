@@ -9,14 +9,20 @@
 // After a valid header the player replies "GO\n"; the sender then sends the pixels in
 // 4096-byte chunks, waiting for a "+" after each. Ends with "OK <frames>\n" or "ERR <reason>\n".
 //
-// Wake word: when it hears the wake word (see wakeword.h), three "typing" dots bounce for a
-// few seconds, then the animation resumes. Mic levels and scores are logged on the serial port.
+// WiFi (see connection.h): a setup hotspot when no WiFi is saved, then a web page for typing
+// prompts. The server writes and draws the animation and sends it back in the upload format.
+//
+// Voice: after the wake word (see wakeword.h), three "typing" dots bounce while it records what
+// you say, until you stop talking. The server turns the speech into the prompt; a spinning
+// rainbow shows while it draws. Saying nothing gets a surprise animation. Mic levels and wake
+// word scores are logged on the serial port.
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <ESP_I2S.h>
 #include <LittleFS.h>
 #include <Wire.h>
 
+#include "connection.h"
 #include "wakeword.h"
 
 #define PANEL_W 64
@@ -43,7 +49,10 @@ HUB75_I2S_CFG::i2s_pins PINS = {
 #define I2S_DIN 39
 #define ES7210_ADDR 0x40
 #define MIC_RATE 16000
-#define DOTS_MS 3000      // how long the dots show after speech
+#define MAX_SPEECH_S 10        // longest prompt it records
+#define END_SILENCE_MS 1000    // this much quiet after speaking ends the prompt
+#define NO_SPEECH_MS 5000      // giving up when nothing is said after the wake word
+#define MIN_SPEECH_MS 300      // shorter sounds (like the tail of "bro") don't count as the prompt
 
 struct Header {
   char magic[4];
@@ -60,7 +69,11 @@ uint16_t frameIndex = 0;
 uint32_t nextFrameAt = 0;
 
 I2SClass mic;
-uint32_t dotsUntil = 0;   // while millis() is before this, show the dots instead of the animation
+uint32_t messageUntil = 0;  // while millis() is before this, leave a text message on screen
+bool messageForever = false;  // the WiFi setup message stays until setup restarts the screen
+const char *messageLines[2] = {"", ""};
+uint16_t messageColor = 0;
+bool messageDrawn = false;
 
 void showText(const char *line1, const char *line2, uint16_t color) {
   panel->clearScreen();
@@ -104,11 +117,20 @@ bool readExactly(uint8_t *dst, size_t len, uint32_t timeoutMs) {
   return true;
 }
 
+bool validHeader(const Header &h) {
+  return memcmp(h.magic, "LMX1", 4) == 0 && h.width == PANEL_W && h.height == PANEL_H && h.frames > 0 &&
+         h.frames <= MAX_FRAMES && h.fps > 0 && h.fps <= 60 && h.length == (uint32_t)h.frames * PANEL_W * PANEL_H * 2;
+}
+
 void saveToFlash(const Header &h, const uint16_t *buf) {
   File f = LittleFS.open(SAVE_PATH, "w");
   if (!f) { Serial.println("WARN could not save"); return; }
   f.write((const uint8_t *)&h, sizeof(h));
-  f.write((const uint8_t *)buf, h.length);
+  // Flash writes pause both cores; small pieces with breaks keep the watchdog happy.
+  for (uint32_t done = 0; done < h.length; done += 16384) {
+    f.write((const uint8_t *)buf + done, min((uint32_t)16384, h.length - done));
+    delay(2);
+  }
   f.close();
 }
 
@@ -116,9 +138,7 @@ bool loadFromFlash() {
   File f = LittleFS.open(SAVE_PATH, "r");
   if (!f) return false;
   Header h;
-  bool ok = f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && memcmp(h.magic, "LMX1", 4) == 0 &&
-            h.width == PANEL_W && h.height == PANEL_H && h.frames > 0 && h.frames <= MAX_FRAMES &&
-            h.length == (uint32_t)h.frames * PANEL_W * PANEL_H * 2;
+  bool ok = f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && validHeader(h);
   uint16_t *buf = ok ? (uint16_t *)ps_malloc(h.length) : nullptr;
   ok = buf && f.read((uint8_t *)buf, h.length) == h.length;
   f.close();
@@ -129,13 +149,23 @@ bool loadFromFlash() {
 }
 
 // Looks for an upload on the USB serial port and receives it.
+// Also takes text commands, one per line (see networkCommand in connection.h).
 void checkForUpload() {
   static uint8_t matched = 0;
+  static String line;
   while (Serial.available()) {
     char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      line.trim();
+      if (line.length() && !networkCommand(line)) Serial.printf("ERR unknown command %s\n", line.c_str());
+      line = "";
+    } else if (line.length() < 200) {
+      line += c;
+    }
     matched = (c == "LMX1"[matched]) ? matched + 1 : (c == 'L' ? 1 : 0);
     if (matched < 4) continue;
     matched = 0;
+    line = "";
 
     Header h;
     memcpy(h.magic, "LMX1", 4);
@@ -206,18 +236,24 @@ bool startMic() {
   return true;
 }
 
-// Listens on its own core so the animation keeps its timing, and sets `voiceAt` when it hears
-// the wake word. If the wake word model can't run, any voice counts instead: a level well
-// above the room's background for about 100 ms.
-volatile uint32_t voiceAt = 0;
+// Listens on its own core so the animation keeps its timing. After the wake word it records
+// until the speaker goes quiet, then hands the recording to loop() through `speechReady`.
+// If the wake word model can't run, any voice counts as the wake word.
+volatile bool listening = false;     // recording a prompt: the dots show
+volatile bool speechReady = false;   // a recording waits in `speech` for loop() to send
+volatile bool surpriseWanted = false;  // the wake word was heard but nothing after it
+int16_t *speech = nullptr;           // MAX_SPEECH_S of 16 kHz mono samples, in PSRAM
+volatile size_t speechSamples = 0;
 
 void listenTask(void *) {
   static int16_t buf[640];  // 20 ms of stereo audio
   static int16_t mono[320];
   bool wakeWord = wakeWordBegin();
-  float noise = 200;
+  speech = (int16_t *)ps_malloc(MAX_SPEECH_S * MIC_RATE * sizeof(int16_t));
+  float noise = 50;
   uint8_t loudBlocks = 0;
-  uint32_t lastLog = 0;
+  uint32_t lastLog = 0, recordStart = 0, speechMs = 0, quietMs = 0;
+  size_t recorded = 0;
   for (;;) {
     size_t got = 0;
     if (i2s_channel_read(mic.rxChan(), buf, sizeof(buf), &got, 100) != ESP_OK || got < sizeof(buf)) continue;
@@ -228,27 +264,66 @@ void listenTask(void *) {
       sum += (float)mono[i] * mono[i];
     }
     float level = sqrtf(sum / 320);
+    bool loud = level > max(noise * 3, 40.0f);  // quiet rooms read about 10, speech 100+
 
-    if (wakeWord) {
-      if (wakeWordFeed(mono, 320)) {
-        voiceAt = millis();
-        Serial.println("WAKE WORD");
+    // The model keeps hearing everything, so its memory of "hey bro" fades while recording;
+    // otherwise the same "hey bro" would trigger again right after.
+    bool heard = wakeWord && wakeWordFeed(mono, 320);
+
+    if (listening) {
+      size_t room = MAX_SPEECH_S * MIC_RATE - recorded;
+      memcpy(speech + recorded, mono, min((size_t)320, room) * sizeof(int16_t));
+      recorded += min((size_t)320, room);
+      if (loud) { speechMs += 20; quietMs = 0; } else quietMs += 20;
+      bool spoke = speechMs >= MIN_SPEECH_MS;
+      bool done = (spoke && quietMs >= END_SILENCE_MS) || recorded >= MAX_SPEECH_S * MIC_RATE;
+      if (!spoke && millis() - recordStart > NO_SPEECH_MS) {
+        listening = false;
+        surpriseWanted = true;
+        Serial.println("Heard nothing after the wake word");
+      } else if (done) {
+        speechSamples = recorded;
+        speechReady = true;
+        listening = false;
+        Serial.printf("Recorded %.1f s\n", recorded / (float)MIC_RATE);
       }
-    } else {
-      bool loud = level > noise * 4 && level > 300;
+      continue;
+    }
+
+    if (!loud) noise += (level - noise) * 0.02f;  // slowly follow the room's background
+    if (!wakeWord) {
       loudBlocks = loud ? loudBlocks + 1 : 0;
-      if (!loud) noise += (level - noise) * 0.02f;  // slowly follow the room's background
-      if (loudBlocks == 5) {
-        voiceAt = millis();
-        Serial.printf("VOICE (level %.0f)\n", level);
-      }
+      heard = loudBlocks == 5;
+    }
+    if (heard && !speechReady && speech) {
+      Serial.println("WAKE WORD");
+      listening = true;
+      recordStart = millis();
+      recorded = speechMs = quietMs = 0;
     }
     if (millis() - lastLog > 5000) {
-      if (wakeWord) Serial.printf("mic level %.0f, best wake word score %.2f\n", level, wakeWordPeak());
+      if (wakeWord) Serial.printf("mic level %.0f, background %.0f, best wake word score %.2f\n", level, noise, wakeWordPeak());
       else Serial.printf("mic level %.0f, background %.0f\n", level, noise);
       lastLog = millis();
     }
   }
+}
+
+// A rainbow comet circling the middle: the screen is drawing what you asked for.
+void drawSpinner(uint32_t t) {
+  panel->clearScreen();
+  float head = (t % 1000) / 1000.0f * 2 * PI;
+  for (int i = 0; i < 14; i++) {
+    float a = head - i * 0.22f;
+    int x = 32 + (int)roundf(cosf(a) * 11), y = 16 + (int)roundf(sinf(a) * 11);
+    float fade = 1 - i / 14.0f;
+    uint8_t hue = (uint8_t)((t / 8 + i * 6) & 255);
+    uint8_t r = (uint8_t)(max(0.0f, sinf(hue / 255.0f * 2 * PI)) * 255 * fade);
+    uint8_t g = (uint8_t)(max(0.0f, sinf(hue / 255.0f * 2 * PI + 2.1f)) * 255 * fade);
+    uint8_t b = (uint8_t)(max(0.0f, sinf(hue / 255.0f * 2 * PI + 4.2f)) * 255 * fade);
+    panel->fillRect(x, y, 2, 2, panel->color565(r, g, b));
+  }
+  panel->flipDMABuffer();
 }
 
 // Three dots like a chat "typing" indicator: each one hops up and brightens in turn.
@@ -266,6 +341,40 @@ void drawDots(uint32_t t) {
   panel->flipDMABuffer();
 }
 
+// Plays an animation the server sent back, or shows why it failed.
+void takeServerAnimation() {
+  uint8_t *data;
+  size_t length;
+  String title, error;
+  if (!takeRequestResult(data, length, title, error)) return;
+  Header h;
+  if (!error.length() && length >= sizeof(h)) {
+    memcpy(&h, data, sizeof(h));
+    if (!validHeader(h) || length != sizeof(h) + h.length) error = "bad animation from server";
+  } else if (!error.length()) {
+    error = "empty reply";
+  }
+  if (error.length()) {
+    if (data) free(data);
+    Serial.printf("Server request failed: %s\n", error.c_str());
+    showText("OOPS", "TRY AGAIN", panel->color565(255, 59, 47));
+    messageUntil = millis() + 2500;
+    return;
+  }
+  memmove(data, data + sizeof(h), h.length);  // pixels to the start of the buffer, which play() owns
+  play((uint16_t *)data, h.frames, h.fps);
+  saveToFlash(h, anim);
+  Serial.printf("Playing \"%s\": %u frames at %u fps\n", title.c_str(), h.frames, h.fps);
+}
+
+const char *SURPRISES[] = {
+  "Surprise me with a fun, colorful animation of your choice",
+  "Something cozy and calming",
+  "A tiny scene with a cute animal doing something funny",
+  "Something that looks great in a dark room",
+  "A cool retro video game moment",
+};
+
 void setup() {
   Serial.setRxBufferSize(16384);
   Serial.begin(115200);
@@ -282,7 +391,19 @@ void setup() {
   panel->setBrightness8(BRIGHTNESS);
 
   if (!LittleFS.begin(true)) Serial.println("WARN flash storage unavailable");
-  if (!loadFromFlash()) showText("READY", "send from app", panel->color565(255, 59, 47));
+  bool hasAnimation = loadFromFlash();
+  showText("WIFI", "...", panel->color565(0, 120, 255));
+  networkBegin();
+  if (setupHotspotName()) {
+    messageLines[0] = "JOIN WIFI";
+    messageLines[1] = setupHotspotName();
+    messageColor = panel->color565(0, 120, 255);
+    messageForever = true;
+  } else if (networkAddress().length()) {
+    showText("WIFI OK", "", panel->color565(0, 200, 80));
+    messageUntil = millis() + 2000;
+  }
+  if (!hasAnimation && !setupHotspotName()) showText("READY", "HEY BRO", panel->color565(255, 59, 47));
   bool micReady = startMic();
   if (micReady) xTaskCreatePinnedToCore(listenTask, "listen", 8192, nullptr, 1, nullptr, 0);
   Serial.println(micReady ? "Mic listening" : "Mic unavailable");
@@ -292,12 +413,33 @@ void setup() {
 void loop() {
   if (!panel) { delay(1000); return; }
   checkForUpload();
-  static uint32_t seenVoice = 0;
-  if (voiceAt != seenVoice) { seenVoice = voiceAt; dotsUntil = millis() + DOTS_MS; }
-  if ((int32_t)(dotsUntil - millis()) > 0) {
-    static uint32_t lastDots = 0;
-    if (millis() - lastDots >= 30) { drawDots(millis()); lastDots = millis(); }
+  networkLoop();
+  takeServerAnimation();
+  if (speechReady) {
+    if (!requestFromSpeech(speech, speechSamples, MIC_RATE)) Serial.println("Can't send the prompt: no WiFi or server");
+    speechReady = false;
+  }
+  if (surpriseWanted) {
+    surpriseWanted = false;
+    requestAnimation(SURPRISES[esp_random() % (sizeof(SURPRISES) / sizeof(SURPRISES[0]))]);
+  }
+  if (listening || requestBusy()) {
+    static uint32_t lastDraw = 0;
+    if (millis() - lastDraw >= 30) {
+      listening ? drawDots(millis()) : drawSpinner(millis());
+      lastDraw = millis();
+    }
     nextFrameAt = millis();  // resume the animation right away afterwards
+    messageDrawn = false;
+    return;
+  }
+  if (messageForever) {
+    if (!messageDrawn) showText(messageLines[0], messageLines[1], messageColor);  // again after the dots
+    messageDrawn = true;
+    return;
+  }
+  if ((int32_t)(messageUntil - millis()) > 0) {
+    nextFrameAt = millis();
     return;
   }
   if (animFrames && (int32_t)(millis() - nextFrameAt) >= 0) {

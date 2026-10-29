@@ -8,9 +8,16 @@
 //   then frames * width * height pixels, RGB565, 2 bytes each, row by row.
 // After a valid header the player replies "GO\n"; the sender then sends the pixels in
 // 4096-byte chunks, waiting for a "+" after each. Ends with "OK <frames>\n" or "ERR <reason>\n".
+//
+// Wake word: when it hears the wake word (see wakeword.h), three "typing" dots bounce for a
+// few seconds, then the animation resumes. Mic levels and scores are logged on the serial port.
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <ESP_I2S.h>
 #include <LittleFS.h>
+#include <Wire.h>
+
+#include "wakeword.h"
 
 #define PANEL_W 64
 #define PANEL_H 32
@@ -27,6 +34,17 @@ HUB75_I2S_CFG::i2s_pins PINS = {
   40, 2, 41         // LAT OE CLK
 };
 
+// Audio on the same board (from Waveshare's BSP): ES7210 mic ADC, controlled over I2C.
+#define I2C_SDA 47
+#define I2C_SCL 48
+#define I2S_MCLK 12
+#define I2S_BCLK 43
+#define I2S_WS 38
+#define I2S_DIN 39
+#define ES7210_ADDR 0x40
+#define MIC_RATE 16000
+#define DOTS_MS 3000      // how long the dots show after speech
+
 struct Header {
   char magic[4];
   uint8_t width, height, fps, reserved1;
@@ -40,6 +58,9 @@ uint16_t animFrames = 0;
 uint8_t animFps = 0;
 uint16_t frameIndex = 0;
 uint32_t nextFrameAt = 0;
+
+I2SClass mic;
+uint32_t dotsUntil = 0;   // while millis() is before this, show the dots instead of the animation
 
 void showText(const char *line1, const char *line2, uint16_t color) {
   panel->clearScreen();
@@ -147,9 +168,108 @@ void checkForUpload() {
   }
 }
 
+bool es7210Write(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ES7210_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  return Wire.endTransmission() == 0;
+}
+
+// Same register sequence as Espressif's es7210 driver: standard I2S, 16-bit,
+// 16 kHz with MCLK = 256 x rate, mic bias 2.87 V, 30 dB gain on all mics.
+bool startMic() {
+  Wire.begin(I2C_SDA, I2C_SCL, 400000);
+  const uint8_t init[][2] = {
+    {0x00, 0xFF}, {0x00, 0x32},              // reset
+    {0x09, 0x30}, {0x0A, 0x30},              // power-up timing
+    {0x23, 0x2A}, {0x22, 0x0A}, {0x21, 0x2A}, {0x20, 0x0A},  // high-pass filters
+    {0x11, 0x60}, {0x12, 0x00},              // I2S, 16-bit, no TDM
+    {0x40, 0xC3},                            // analog power
+    {0x41, 0x70}, {0x42, 0x70},              // mic bias 2.87 V
+    {0x43, 0x1A}, {0x44, 0x1A}, {0x45, 0x1A}, {0x46, 0x1A},  // 30 dB gain
+    {0x47, 0x08}, {0x48, 0x08}, {0x49, 0x08}, {0x4A, 0x08},  // mic power
+    {0x07, 0x20}, {0x02, 0xC1}, {0x04, 0x01}, {0x05, 0x00},  // 16 kHz from 4.096 MHz MCLK
+    {0x06, 0x04},                            // DLL off
+    {0x4B, 0x0F}, {0x4C, 0x0F},              // bias, ADC, PGA on
+    {0x00, 0x71}, {0x00, 0x41},              // enable
+  };
+  Wire.setTimeOut(50);
+  for (auto &r : init)
+    if (!es7210Write(r[0], r[1])) { Serial.printf("WARN mic chip not answering at 0x%02X\n", ES7210_ADDR); return false; }
+  Serial.println("mic chip configured");
+
+  mic.setPins(I2S_BCLK, I2S_WS, -1, I2S_DIN, I2S_MCLK);
+  if (!mic.begin(I2S_MODE_STD, MIC_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)) {
+    Serial.println("WARN mic I2S did not start");
+    return false;
+  }
+  return true;
+}
+
+// Listens on its own core so the animation keeps its timing, and sets `voiceAt` when it hears
+// the wake word. If the wake word model can't run, any voice counts instead: a level well
+// above the room's background for about 100 ms.
+volatile uint32_t voiceAt = 0;
+
+void listenTask(void *) {
+  static int16_t buf[640];  // 20 ms of stereo audio
+  static int16_t mono[320];
+  bool wakeWord = wakeWordBegin();
+  float noise = 200;
+  uint8_t loudBlocks = 0;
+  uint32_t lastLog = 0;
+  for (;;) {
+    size_t got = 0;
+    if (i2s_channel_read(mic.rxChan(), buf, sizeof(buf), &got, 100) != ESP_OK || got < sizeof(buf)) continue;
+
+    float sum = 0;
+    for (int i = 0; i < 320; i++) {
+      mono[i] = buf[i * 2];  // left channel: first microphone
+      sum += (float)mono[i] * mono[i];
+    }
+    float level = sqrtf(sum / 320);
+
+    if (wakeWord) {
+      if (wakeWordFeed(mono, 320)) {
+        voiceAt = millis();
+        Serial.println("WAKE WORD");
+      }
+    } else {
+      bool loud = level > noise * 4 && level > 300;
+      loudBlocks = loud ? loudBlocks + 1 : 0;
+      if (!loud) noise += (level - noise) * 0.02f;  // slowly follow the room's background
+      if (loudBlocks == 5) {
+        voiceAt = millis();
+        Serial.printf("VOICE (level %.0f)\n", level);
+      }
+    }
+    if (millis() - lastLog > 5000) {
+      if (wakeWord) Serial.printf("mic level %.0f, best wake word score %.2f\n", level, wakeWordPeak());
+      else Serial.printf("mic level %.0f, background %.0f\n", level, noise);
+      lastLog = millis();
+    }
+  }
+}
+
+// Three dots like a chat "typing" indicator: each one hops up and brightens in turn.
+void drawDots(uint32_t t) {
+  panel->clearScreen();
+  for (int i = 0; i < 3; i++) {
+    float phase = (t % 1200) / 1200.0f * 2 * PI - i * 1.1f;
+    float up = max(0.0f, sinf(phase));  // 0 resting, 1 at the top of the hop
+    int x = 22 + i * 8, y = 15 - (int)(up * 4 + 0.5f);
+    uint8_t v = 110 + (uint8_t)(up * 145);
+    uint16_t c = panel->color565(v, v, v);
+    panel->fillRect(x + 1, y, 2, 4, c);  // 4x4 dot with the corners cut off
+    panel->fillRect(x, y + 1, 4, 2, c);
+  }
+  panel->flipDMABuffer();
+}
+
 void setup() {
   Serial.setRxBufferSize(16384);
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);  // never stall the animation when no computer is reading the logs
   delay(300);
   Serial.println("\nLED Matrix Studio player starting");
 
@@ -163,12 +283,23 @@ void setup() {
 
   if (!LittleFS.begin(true)) Serial.println("WARN flash storage unavailable");
   if (!loadFromFlash()) showText("READY", "send from app", panel->color565(255, 59, 47));
+  bool micReady = startMic();
+  if (micReady) xTaskCreatePinnedToCore(listenTask, "listen", 8192, nullptr, 1, nullptr, 0);
+  Serial.println(micReady ? "Mic listening" : "Mic unavailable");
   Serial.println("Ready for uploads");
 }
 
 void loop() {
   if (!panel) { delay(1000); return; }
   checkForUpload();
+  static uint32_t seenVoice = 0;
+  if (voiceAt != seenVoice) { seenVoice = voiceAt; dotsUntil = millis() + DOTS_MS; }
+  if ((int32_t)(dotsUntil - millis()) > 0) {
+    static uint32_t lastDots = 0;
+    if (millis() - lastDots >= 30) { drawDots(millis()); lastDots = millis(); }
+    nextFrameAt = millis();  // resume the animation right away afterwards
+    return;
+  }
   if (animFrames && (int32_t)(millis() - nextFrameAt) >= 0) {
     drawFrame(frameIndex);
     frameIndex = (frameIndex + 1) % animFrames;

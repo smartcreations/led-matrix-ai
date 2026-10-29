@@ -1,0 +1,14 @@
+{
+  "type": "micro",
+  "wake_word": "Hey Bro",
+  "author": "Smart Creation LLC",
+  "model": "hey_bro.tflite",
+  "trained_languages": ["en"],
+  "version": 2,
+  "micro": {
+    "probability_cutoff": 0.92,
+    "feature_step_size": 10,
+    "sliding_window_size": 5,
+    "tensor_arena_size": 30000
+  }
+}

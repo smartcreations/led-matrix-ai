@@ -417,8 +417,9 @@ static void fetch() {
   http.addHeader("Content-Type", pendingType);
   http.addHeader("Authorization", "Bearer " + deviceKey);
   if (bypass.length()) http.addHeader("x-vercel-protection-bypass", bypass);
-  const char *headers[] = {"X-Animation-Title", "X-Prompt"};
-  http.collectHeaders(headers, 2);
+  const char *headers[] = {"X-Animation-Title", "X-Prompt", "Server-Timing"};
+  http.collectHeaders(headers, 3);
+  uint32_t started = millis();
 
   int code = pendingAudio ? http.POST(pendingAudio, pendingAudioLength) : http.POST(pendingJson);
   free(pendingAudio);
@@ -437,6 +438,7 @@ static void fetch() {
   int written = http.writeToStream(&sink);
   String title = urlDecode(http.header("X-Animation-Title"));
   if (http.hasHeader("X-Prompt")) Serial.printf("Heard: %s\n", urlDecode(http.header("X-Prompt")).c_str());
+  Serial.printf("Server took %s; %u ms in all, %d bytes\n", http.header("Server-Timing").c_str(), millis() - started, written);
   http.end();
   if (written < 0 || sink.failed) {
     free(sink.data);

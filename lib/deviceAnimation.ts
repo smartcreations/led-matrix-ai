@@ -50,38 +50,59 @@ export async function animationResponse(
   prompt: string,
   mode: DisplayMode,
   extraHeaders: Record<string, string> = {},
+  timings: Record<string, number> = {},
 ) {
+  // How long each stage takes, in the logs and the Server-Timing header.
+  let mark = Date.now();
+  const lap = (stage: string) => {
+    timings[stage] = (timings[stage] ?? 0) + Date.now() - mark;
+    mark = Date.now();
+  };
+  const report = (outcome: string) => {
+    const parts = Object.entries(timings).map(([stage, ms]) => `${stage} ${ms}ms`);
+    console.log(`[device] ${JSON.stringify(prompt)} → ${outcome} | ${parts.join(', ')}`);
+    return Object.entries(timings).map(([stage, ms]) => `${stage};dur=${ms}`).join(', ');
+  };
+
   const now = localTime(req);
-  const started = Date.now();
   const route = await routePrompt(prompt);
+  lap('route');
   let drawPrompt = prompt;
   if (route === 'answer') {
     const brief = await answerPrompt(prompt, now, screenPlace(req));
+    lap('answer');
     drawPrompt = `Show this answer on the display: ${brief}\n(They asked: "${prompt}")`;
-    console.log(`[device] answer for ${JSON.stringify(prompt)}: ${JSON.stringify(brief)}`);
+    console.log(`[device] answer: ${JSON.stringify(brief)}`);
   }
-  console.log(`[device] route ${route} in ${Date.now() - started} ms`);
-  extraHeaders = { ...extraHeaders, 'X-Route': route };
 
   let feedback = '';
   for (let attempt = 0; attempt < 2; attempt++) {
     const anim = await writeAnimation(drawPrompt + feedback, mode, now);
-    if (!anim) return new Response('No animation was written', { status: 502 });
+    lap('write');
+    if (!anim) {
+      report('no animation');
+      return new Response('No animation was written', { status: 502 });
+    }
     try {
       const frames = await renderOnServer(anim, mode);
       const body = encodeAnimation(frames, anim.fps, mode);
+      lap('render');
       return new Response(Buffer.from(body), {
         headers: {
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(body.length),
           'X-Animation-Title': encodeURIComponent(anim.title),
+          'X-Route': route,
+          'Server-Timing': report(`${route}: "${anim.title}"`),
           ...extraHeaders,
         },
       });
     } catch (e) {
+      lap('render');
       feedback = `\n\n(Your previous code failed with "${(e as Error).message}". Fix it.)`;
     }
   }
+  report('render failed');
   return new Response('The animation could not be drawn', { status: 502 });
 }
 

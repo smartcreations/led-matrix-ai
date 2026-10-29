@@ -20,9 +20,11 @@ export async function POST(req: Request) {
   const audio = new Uint8Array(await req.arrayBuffer());
   if (audio.length < 1000 || audio.length > MAX_AUDIO) return new Response('Bad audio size', { status: 400 });
 
+  const started = Date.now();
   const { text } = await transcribe({ model: transcriber, audio });
+  const transcribeMs = Date.now() - started;
   const prompt = text.trim().slice(0, 500);
   console.log(`[voice] heard: ${JSON.stringify(prompt)}`);
   if (!/[a-z0-9]/i.test(prompt)) return new Response("Didn't catch any words", { status: 422 });
-  return animationResponse(req, prompt, 'rgb', { 'X-Prompt': encodeURIComponent(prompt) });
+  return animationResponse(req, prompt, 'rgb', { 'X-Prompt': encodeURIComponent(prompt) }, { transcribe: transcribeMs });
 }

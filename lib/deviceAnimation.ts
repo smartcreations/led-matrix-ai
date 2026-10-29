@@ -20,14 +20,39 @@ export function deviceAuthorized(req: Request) {
 }
 
 /**
+ * The screen's local date and time, from the timezone Vercel works out from its IP address
+ * (UTC elsewhere), so it can answer "what time is it?".
+ */
+export function localTime(req: Request) {
+  const timeZone = req.headers.get('x-vercel-ip-timezone') ?? 'UTC';
+  try {
+    return new Date().toLocaleString('en-US', { timeZone, dateStyle: 'full', timeStyle: 'short' }) + ` (${timeZone})`;
+  } catch {
+    return new Date().toUTCString();
+  }
+}
+
+// The screens get questions as well as animation ideas, and have no other way to answer.
+const deviceInstructions = (now: string) => `
+
+This display is a desk gadget people talk to. Always answer by calling createAnimation, never with text alone.
+If they ask a question (the time, a fact, a quick calculation), answer it on the display: the answer as large, readable text, scrolling sideways if it is wider than the display, with a small fitting illustration or effect.
+The current date and time where the display is: ${now}.`;
+
+/**
  * Writes and draws an animation for `prompt` and replies with it in the upload format, with its
  * title (and `extraHeaders`) as headers. If the first code doesn't render, Claude gets the error
  * and one more try.
  */
-export async function animationResponse(prompt: string, mode: DisplayMode, extraHeaders: Record<string, string> = {}) {
+export async function animationResponse(
+  prompt: string,
+  mode: DisplayMode,
+  now: string,
+  extraHeaders: Record<string, string> = {},
+) {
   let feedback = '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    const anim = await writeAnimation(prompt + feedback, mode);
+    const anim = await writeAnimation(prompt + feedback, mode, now);
     if (!anim) return new Response('No animation was written', { status: 502 });
     try {
       const frames = await renderOnServer(anim, mode);
@@ -47,10 +72,11 @@ export async function animationResponse(prompt: string, mode: DisplayMode, extra
   return new Response('The animation could not be drawn', { status: 502 });
 }
 
-async function writeAnimation(prompt: string, mode: DisplayMode): Promise<Animation | null> {
+async function writeAnimation(prompt: string, mode: DisplayMode, now: string): Promise<Animation | null> {
   const { toolCalls } = await generateText({
     model: deviceModel,
-    system: systemPrompt(mode),
+    system: systemPrompt(mode) + deviceInstructions(now),
+    toolChoice: { type: 'tool', toolName: 'createAnimation' },
     prompt,
     tools: {
       createAnimation: tool({

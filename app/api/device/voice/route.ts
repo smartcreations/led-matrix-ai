@@ -1,5 +1,5 @@
 import { createGateway, experimental_transcribe as transcribe } from 'ai';
-import { animationResponse, deviceAuthorized, localTime } from '@/lib/deviceAnimation';
+import { animationResponse, deviceAuthorized } from '@/lib/deviceAnimation';
 
 export const maxDuration = 120;
 
@@ -24,5 +24,5 @@ export async function POST(req: Request) {
   const prompt = text.trim().slice(0, 500);
   console.log(`[voice] heard: ${JSON.stringify(prompt)}`);
   if (!/[a-z0-9]/i.test(prompt)) return new Response("Didn't catch any words", { status: 422 });
-  return animationResponse(prompt, 'rgb', localTime(req), { 'X-Prompt': encodeURIComponent(prompt) });
+  return animationResponse(req, prompt, 'rgb', { 'X-Prompt': encodeURIComponent(prompt) });
 }

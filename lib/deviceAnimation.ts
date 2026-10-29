@@ -5,6 +5,7 @@ import { encodeAnimation } from './lmx';
 import { deviceModel } from './models';
 import { animationSchema, systemPrompt } from './prompt';
 import { renderOnServer } from './renderServer';
+import { answerPrompt, routePrompt, screenPlace } from './router';
 
 // Shared by the LED screens' API routes (app/api/device): the screen's key check, and
 // prompt → Claude → frames → the player's upload format.
@@ -45,14 +46,26 @@ The current date and time where the display is: ${now}.`;
  * and one more try.
  */
 export async function animationResponse(
+  req: Request,
   prompt: string,
   mode: DisplayMode,
-  now: string,
   extraHeaders: Record<string, string> = {},
 ) {
+  const now = localTime(req);
+  const started = Date.now();
+  const route = await routePrompt(prompt);
+  let drawPrompt = prompt;
+  if (route === 'answer') {
+    const brief = await answerPrompt(prompt, now, screenPlace(req));
+    drawPrompt = `Show this answer on the display: ${brief}\n(They asked: "${prompt}")`;
+    console.log(`[device] answer for ${JSON.stringify(prompt)}: ${JSON.stringify(brief)}`);
+  }
+  console.log(`[device] route ${route} in ${Date.now() - started} ms`);
+  extraHeaders = { ...extraHeaders, 'X-Route': route };
+
   let feedback = '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    const anim = await writeAnimation(prompt + feedback, mode, now);
+    const anim = await writeAnimation(drawPrompt + feedback, mode, now);
     if (!anim) return new Response('No animation was written', { status: 502 });
     try {
       const frames = await renderOnServer(anim, mode);

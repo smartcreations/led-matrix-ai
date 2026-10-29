@@ -14,6 +14,11 @@ export const deviceModel = direct
   ? anthropic(process.env.DEVICE_MODEL ?? 'claude-haiku-5-5')
   : (process.env.DEVICE_MODEL ?? 'anthropic/claude-haiku-5.5');
 
+/** Sorts screen prompts into "draw" or "answer" before anything else runs. Override with ROUTER_MODEL. */
+export const routerModel = direct
+  ? anthropic(process.env.ROUTER_MODEL ?? 'claude-haiku-5-5')
+  : (process.env.ROUTER_MODEL ?? 'anthropic/claude-haiku-5.5');
+
 /** Small, fast model for the starter suggestions. Override with SUGGESTIONS_MODEL. */
 export const suggestModel = direct
   ? anthropic(process.env.SUGGESTIONS_MODEL ?? 'claude-haiku-5-5')

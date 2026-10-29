@@ -1,5 +1,5 @@
 import type { DisplayMode } from '@/lib/animation';
-import { animationResponse, deviceAuthorized, localTime } from '@/lib/deviceAnimation';
+import { animationResponse, deviceAuthorized } from '@/lib/deviceAnimation';
 
 export const maxDuration = 120;
 
@@ -15,5 +15,5 @@ export async function POST(req: Request) {
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 500) : '';
   if (!prompt) return new Response('Missing prompt', { status: 400 });
   const mode: DisplayMode = body.mode === 'mono' ? 'mono' : 'rgb';
-  return animationResponse(prompt, mode, localTime(req));
+  return animationResponse(req, prompt, mode);
 }

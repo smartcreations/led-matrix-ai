@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { generateText, tool } from 'ai';
 import { HEIGHT, WIDTH, type Animation, type DisplayMode, type Frame } from './animation';
-import { judgeAnimation, judgeEnabled } from './judge';
+import { checkText, judgeAnimation, judgeEnabled } from './judge';
 import { encodeAnimation } from './lmx';
 import { deviceModel } from './models';
 import { animationSchema, systemPrompt } from './prompt';
@@ -98,7 +98,7 @@ export async function animationResponse(
   if (route === 'answer') {
     const brief = await answerPrompt(prompt, now, screenPlace(req));
     lap('answer');
-    drawPrompt = `Show this answer on the display: ${brief}\n(They asked: "${prompt}")`;
+    drawPrompt = `Show this answer on the display. Write only the TEXT line's words on screen; draw the PICTURE, don't write it.\n${brief}\n(They asked: "${prompt}")`;
     console.log(`[device] answer: ${JSON.stringify(brief)}`);
   }
 
@@ -111,29 +111,30 @@ export async function animationResponse(
     lap('write');
     if (!anim) break;
     let frames: Frame[];
+    let problem: string | null;
     try {
-      frames = await renderOnServer(anim, mode);
+      const rendered = await renderOnServer(anim, mode);
+      frames = rendered.frames;
+      problem = checkText(rendered.texts, anim);
       lap('render');
     } catch (e) {
       lap('render');
       feedback = `\n\n(Your previous code failed with "${(e as Error).message}". Fix it.)`;
       continue;
     }
-    // The judge costs ~3 s, so it only looks at animations with text, where most mistakes are
-    // (clipped words, unreadable scrolling, wrong answers).
-    if (attempt === 0 && judgeEnabled && /\btext\(/.test(anim.code)) {
-      const problem = await judgeAnimation(drawPrompt, anim, frames, mode).catch(() => null);
+    if (attempt === 0 && !problem && judgeEnabled) {
+      problem = await judgeAnimation(drawPrompt, anim, frames, mode).catch(() => null);
       lap('judge');
-      if (problem) {
-        console.log(`[device] judge: ${problem}`);
-        fallback = { anim, frames };
-        feedback = `\n\n(A reviewer looked at the frames of your previous version: ${problem} Fix it.)`;
-        continue;
-      }
+    }
+    if (attempt === 0 && problem) {
+      console.log(`[device] check: ${problem}`);
+      fallback = { anim, frames };
+      feedback = `\n\n(Your previous version had problems: ${problem} Fix them.)`;
+      continue;
     }
     return reply(anim, frames, `${route}: "${anim.title}"${attempt ? ' (second try)' : ''}`);
   }
-  if (fallback) return reply(fallback.anim, fallback.frames, `${route}: "${fallback.anim.title}" (judged, retry failed)`);
+  if (fallback) return reply(fallback.anim, fallback.frames, `${route}: "${fallback.anim.title}" (checked, retry failed)`);
   report('failed');
   return new Response('The animation could not be drawn', { status: 502 });
 }

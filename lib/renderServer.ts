@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import '@napi-rs/canvas'; // so the deployment includes it; the worker loads it by path
-import { HEIGHT, RENDER_CORE, WIDTH, type Animation, type DisplayMode, type Frame } from './animation';
+import { HEIGHT, RENDER_CORE, WIDTH, type Animation, type DisplayMode, type Frame, type TextDraw } from './animation';
 import { FONT_5X7 } from './font';
 
 // Generated code runs in a worker thread with an empty environment (no API keys), no network
@@ -16,7 +16,9 @@ for (const k of ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'Request
 }
 ${RENDER_CORE}
 try {
-  parentPort.postMessage({ frames: renderFrames(createCanvas, FONT, workerData) });
+  const texts = [];
+  const frames = renderFrames(createCanvas, FONT, workerData, (frame, t) => texts.push({ frame, ...t }));
+  parentPort.postMessage({ frames, texts });
 } catch (err) {
   parentPort.postMessage({ error: String((err && err.message) || err) });
 }
@@ -24,8 +26,12 @@ try {
 
 const canvasPath = createRequire(path.join(process.cwd(), 'package.json')).resolve('@napi-rs/canvas');
 
-/** Renders an animation to frames on the server. */
-export function renderOnServer(anim: Animation, mode: DisplayMode, timeoutMs = 8000): Promise<Frame[]> {
+/** Renders an animation to frames on the server, with every text() call it made. */
+export function renderOnServer(
+  anim: Animation,
+  mode: DisplayMode,
+  timeoutMs = 8000,
+): Promise<{ frames: Frame[]; texts: TextDraw[] }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerSource(canvasPath), {
       eval: true,
@@ -37,11 +43,11 @@ export function renderOnServer(anim: Animation, mode: DisplayMode, timeoutMs = 8
       worker.terminate();
       reject(new Error('Animation took too long to render'));
     }, timeoutMs);
-    worker.once('message', (m: { frames?: Frame[]; error?: string }) => {
+    worker.once('message', (m: { frames?: Frame[]; texts?: TextDraw[]; error?: string }) => {
       clearTimeout(timer);
       worker.terminate();
       if (m.error || !m.frames) reject(new Error(m.error ?? 'No frames'));
-      else resolve(m.frames);
+      else resolve({ frames: m.frames, texts: m.texts ?? [] });
     });
     worker.once('error', (e) => {
       clearTimeout(timer);

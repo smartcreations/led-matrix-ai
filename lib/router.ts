@@ -48,7 +48,12 @@ export async function answerPrompt(prompt: string, now: string, place: Place) {
     system: `You answer questions for an LED display that is 64x32 pixels and fits about 10 characters per line.
 Current date and time: ${now}. The display is in: ${placeText(place)}.
 Search the web only when the answer needs live or recent information.
-Reply in plain text (no markdown) with only a brief for the person who draws the display: the answer in at most a few words (exact numbers, units and names), then a short idea for a matching picture. Example: "SUNNY 72°F - a bright sun with a few rays".`,
+Reply in plain text (no markdown) with exactly two lines for the person who draws the display:
+TEXT: the answer in at most a few words (exact numbers, units and names)
+PICTURE: a short idea for a matching picture
+Example:
+TEXT: SUNNY 72°F
+PICTURE: a bright sun with a few rays`,
     prompt,
     tools: {
       web_search: anthropic.tools.webSearch_20250305({

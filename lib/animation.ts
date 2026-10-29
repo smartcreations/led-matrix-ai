@@ -12,6 +12,9 @@ export type DisplayMode = 'mono' | 'rgb';
  */
 export type Frame = number[][];
 
+/** One text() call while rendering: where it landed on the display, in pixels. */
+export type TextDraw = { frame: number; str: string; x: number; y: number; scale: number; width: number };
+
 export type Animation = {
   title: string;
   fps: number;
@@ -25,7 +28,8 @@ export type Animation = {
  * server's worker thread. Runs the generated draw() once per frame and returns the frames.
  */
 export const RENDER_CORE = `
-function renderFrames(newCanvas, FONT, { code, fps, durationMs, width, height, mode }) {
+function renderFrames(newCanvas, FONT, { code, fps, durationMs, width, height, mode }, onText) {
+  let frameIndex = 0;
   const canvas = newCanvas(width, height);
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   // on: truthy/falsy, or (in rgb mode) any CSS color string.
@@ -36,6 +40,11 @@ function renderFrames(newCanvas, FONT, { code, fps, durationMs, width, height, m
     ctx.fillStyle = prev;
   };
   const text = (str, x, y) => {
+    if (onText) {
+      // Where the text really lands, through any translate/scale the code set.
+      const m = ctx.getTransform();
+      onText(frameIndex, { str: String(str), x: m.a * x + m.e, y: m.d * y + m.f, scale: m.a, width: textWidth(str) * m.a });
+    }
     x = Math.round(x); y = Math.round(y);
     for (const ch of String(str).toUpperCase()) {
       const code = ch.charCodeAt(0);
@@ -51,6 +60,7 @@ function renderFrames(newCanvas, FONT, { code, fps, durationMs, width, height, m
   const count = Math.max(1, Math.round((durationMs * fps) / 1000));
   const frames = [];
   for (let i = 0; i < count; i++) {
+    frameIndex = i;
     const t = (i * 1000) / fps;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;

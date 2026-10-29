@@ -34,7 +34,8 @@ The code is the BODY of this function, called once per frame:
 - textWidth(str): width in pixels of text(str).
 Every pixel is thresholded to on/off, so draw in pure white and avoid thin anti-aliased shapes; prefer fillRect, setPixel and filled arcs.
 The function must be pure: compute everything from t or p, keep no state between frames, and use no timers, network or DOM.
-Keep code under 80 lines. Pick fps between 10 and 30 and durationMs between 1000 and 10000.
+Scrolling text must be easy to read: move it 1 pixel per frame at 15 to 20 fps (never more than 25 pixels per second), and make durationMs long enough for the whole text to pass once: at least (textWidth(str) + w) / speed * 1000, up to 20000. Prefer text that fits without scrolling (10 characters per line, 2 lines at most).
+Keep code under 80 lines. Pick fps between 10 and 30 and durationMs between 1000 and 10000 (longer only for scrolling text).
 On follow-up requests, return the full updated code, not a diff.`;
 };
 

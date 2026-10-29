@@ -1,7 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { generateText, tool } from 'ai';
-import { HEIGHT, WIDTH, type Animation, type DisplayMode } from './animation';
+import { HEIGHT, WIDTH, type Animation, type DisplayMode, type Frame } from './animation';
+import { judgeAnimation, judgeEnabled } from './judge';
 import { encodeAnimation } from './lmx';
 import { deviceModel } from './models';
 import { animationSchema, systemPrompt } from './prompt';
@@ -40,7 +41,7 @@ const deviceInstructions = (now: string) => `
 This display is a desk gadget people talk to. Always answer by calling createAnimation, never with text alone.
 If they ask a question (the time, a fact, a quick calculation), answer it on the display: the answer as large, readable text, scrolling sideways if it is wider than the display, with a small fitting illustration or effect.
 The current date and time where the display is: ${now}.
-Speed matters: the person is waiting. Keep the code short (under 40 lines), and make one loop 2 to 5 seconds long at 15 to 20 fps.`;
+Speed matters: the person is waiting. Keep the code short (under 40 lines), and make one loop 2 to 5 seconds long at 15 to 20 fps (scrolling text: as long as the scroll needs).`;
 
 /**
  * Writes and draws an animation for `prompt` and replies with it in the upload format, with its
@@ -66,6 +67,25 @@ export async function animationResponse(
     return Object.entries(timings).map(([stage, ms]) => `${stage};dur=${ms}`).join(', ');
   };
 
+  const reply = (anim: Animation, frames: Frame[], outcome: string) => {
+    const raw = encodeAnimation(frames, anim.fps, mode);
+    // Raw frames are ~4 KB each and mostly black; screens that can unpack zlib get a reply
+    // 5-20x smaller, which matters most on a slow hotspot.
+    const zlib = req.headers.get('x-accept-compression')?.includes('zlib');
+    const body = zlib ? deflateSync(raw, { level: 9 }) : Buffer.from(raw);
+    return new Response(body, {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(body.length),
+        ...(zlib && { 'X-Compression': 'zlib', 'X-Uncompressed-Length': String(raw.length) }),
+        'X-Animation-Title': encodeURIComponent(anim.title),
+        'X-Route': route,
+        'Server-Timing': report(outcome),
+        ...extraHeaders,
+      },
+    });
+  };
+
   const now = localTime(req);
   // Most prompts are things to draw, so drawing starts while the router decides; a question
   // cancels it and draws the answer instead.
@@ -82,40 +102,39 @@ export async function animationResponse(
     console.log(`[device] answer: ${JSON.stringify(brief)}`);
   }
 
+  // Up to two tries: the second gets the render error or the judge's notes on the first.
   let feedback = '';
+  let fallback: { anim: Animation; frames: Frame[] } | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const anim =
       attempt === 0 && route === 'draw' ? await draft : await writeAnimation(drawPrompt + feedback, mode, now);
     lap('write');
-    if (!anim) {
-      report('no animation');
-      return new Response('No animation was written', { status: 502 });
-    }
+    if (!anim) break;
+    let frames: Frame[];
     try {
-      const frames = await renderOnServer(anim, mode);
-      const raw = encodeAnimation(frames, anim.fps, mode);
-      // Raw frames are ~4 KB each and mostly black; screens that can unpack zlib get a reply
-      // 5-20x smaller, which matters most on a slow hotspot.
-      const zlib = req.headers.get('x-accept-compression')?.includes('zlib');
-      const body = zlib ? deflateSync(raw, { level: 9 }) : Buffer.from(raw);
+      frames = await renderOnServer(anim, mode);
       lap('render');
-      return new Response(body, {
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': String(body.length),
-          ...(zlib && { 'X-Compression': 'zlib', 'X-Uncompressed-Length': String(raw.length) }),
-          'X-Animation-Title': encodeURIComponent(anim.title),
-          'X-Route': route,
-          'Server-Timing': report(`${route}: "${anim.title}"`),
-          ...extraHeaders,
-        },
-      });
     } catch (e) {
       lap('render');
       feedback = `\n\n(Your previous code failed with "${(e as Error).message}". Fix it.)`;
+      continue;
     }
+    // The judge costs ~3 s, so it only looks at animations with text, where most mistakes are
+    // (clipped words, unreadable scrolling, wrong answers).
+    if (attempt === 0 && judgeEnabled && /\btext\(/.test(anim.code)) {
+      const problem = await judgeAnimation(drawPrompt, anim, frames, mode).catch(() => null);
+      lap('judge');
+      if (problem) {
+        console.log(`[device] judge: ${problem}`);
+        fallback = { anim, frames };
+        feedback = `\n\n(A reviewer looked at the frames of your previous version: ${problem} Fix it.)`;
+        continue;
+      }
+    }
+    return reply(anim, frames, `${route}: "${anim.title}"${attempt ? ' (second try)' : ''}`);
   }
-  report('render failed');
+  if (fallback) return reply(fallback.anim, fallback.frames, `${route}: "${fallback.anim.title}" (judged, retry failed)`);
+  report('failed');
   return new Response('The animation could not be drawn', { status: 502 });
 }
 

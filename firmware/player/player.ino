@@ -383,6 +383,11 @@ const char *SURPRISES[] = {
   "A cool retro video game moment",
 };
 
+static void memLog(const char *stage) {
+  Serial.printf("MEM %s: internal free %u, largest %u\n", stage, heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
 void setup() {
   Serial.setRxBufferSize(16384);
   Serial.begin(115200);
@@ -397,6 +402,7 @@ void setup() {
   panel = new MatrixPanel_I2S_DMA(cfg);
   if (!panel->begin()) { Serial.println("ERROR panel did not start"); return; }
   panel->setBrightness8(BRIGHTNESS);
+  memLog("panel");
 
   if (!LittleFS.begin(true)) Serial.println("WARN flash storage unavailable");
   // Boot screen with the firmware version at the bottom, so it's clear which build is running.
@@ -404,8 +410,11 @@ void setup() {
   delay(1500);
   bool hasAnimation = loadFromFlash();
   showText("WIFI", "...", panel->color565(0, 120, 255));
+  memLog("before wifi");
   networkBegin();
+  memLog("wifi");
   bluetoothBegin(deviceName());
+  memLog("bluetooth");
   if (setupHotspotName()) {
     messageLines[0] = "JOIN WIFI";
     messageLines[1] = setupHotspotName();
@@ -423,8 +432,9 @@ void setup() {
   esp_task_wdt_reconfigure(&wdt);
   bool micReady = startMic();
   if (micReady) soundBegin(mic);
-  if (micReady) xTaskCreatePinnedToCore(listenTask, "listen", 8192, nullptr, 1, nullptr, 0);
+  if (micReady) xTaskCreatePinnedToCoreWithCaps(listenTask, "listen", 8192, nullptr, 1, nullptr, 0, MALLOC_CAP_SPIRAM);
   Serial.println(micReady ? "Mic listening" : "Mic unavailable");
+  memLog("mic");
   Serial.println("Ready for uploads");
 }
 
@@ -439,7 +449,11 @@ void loop() {
   }
   takeServerAnimation();
   if (speechReady) {
-    if (!requestFromSpeech(speech, speechSamples, MIC_RATE)) Serial.println("Can't send the prompt: no WiFi or server");
+    if (!requestFromSpeech(speech, speechSamples, MIC_RATE)) {
+      Serial.println("Can't send the prompt: no WiFi or server");
+      showText("NO WIFI", "TRY AGAIN", panel->color565(255, 59, 47));
+      messageUntil = millis() + 2500;
+    }
     speechReady = false;
   }
   if (surpriseWanted) {

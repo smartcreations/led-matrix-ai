@@ -1,5 +1,6 @@
 #include "connection.h"
 #include "version.h"
+#include <mbedtls/platform.h>
 #include "bluetooth.h"
 
 #include <DNSServer.h>
@@ -28,6 +29,8 @@ static String pendingPath, pendingType, pendingJson;
 static uint8_t *pendingAudio = nullptr;
 static size_t pendingAudioLength = 0;
 static SemaphoreHandle_t lock;
+static TaskHandle_t fetcher;
+static void fetchTask(void *);
 static bool resultReady = false;
 static uint8_t *resultData = nullptr;
 static size_t resultLength = 0;
@@ -181,8 +184,16 @@ static void startMdns() {
   if (MDNS.begin(host.c_str())) MDNS.addService("http", "tcp", 80);
 }
 
+// HTTPS needs ~40 KB while a request runs. With Bluetooth on, the internal memory is nearly
+// gone, so TLS buffers go to PSRAM (the core's default is internal only).
+static void *tlsCalloc(size_t n, size_t size) {
+  return heap_caps_calloc_prefer(n, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 void networkBegin() {
+  mbedtls_platform_set_calloc_free(tlsCalloc, free);
   lock = xSemaphoreCreateMutex();
+  xTaskCreatePinnedToCoreWithCaps(fetchTask, "fetch", 12288, nullptr, 1, &fetcher, 0, MALLOC_CAP_SPIRAM);  // stack in PSRAM: internal memory is short
   loadSettings();
   uint8_t mac[6];
   esp_efuse_mac_get_default(mac);  // WiFi.macAddress() is all zeros before WiFi starts
@@ -435,17 +446,21 @@ static void fetch() {
   }
 }
 
+// One worker, started at boot: once Bluetooth is running there may not be enough internal
+// memory left to start a new task for every request.
+
 static void fetchTask(void *) {
-  fetch();  // its HTTP client is cleaned up before the task ends
-  vTaskDelete(nullptr);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    Serial.printf("Request starting, free internal memory %u (largest block %u)\n",
+                  heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    fetch();
+  }
 }
 
 static bool startRequest() {
-  if (xTaskCreatePinnedToCore(fetchTask, "fetch", 12288, nullptr, 1, nullptr, 0) == pdPASS) return true;
-  free(pendingAudio);
-  pendingAudio = nullptr;
-  busy = false;
-  return false;
+  xTaskNotifyGive(fetcher);
+  return true;
 }
 
 static bool canRequest() { return !busy && WiFi.status() == WL_CONNECTED && serverUrl.length() && deviceKey.length(); }

@@ -3,6 +3,11 @@ import { FONT_5X7 } from './font';
 export const WIDTH = 64;
 export const HEIGHT = 32;
 
+/** The sizes a screen can ask for. Anything that doesn't ask gets the first: the physical panels. */
+export type DisplaySize = { width: number; height: number };
+export const DEFAULT_SIZE: DisplaySize = { width: WIDTH, height: HEIGHT };
+export const DISPLAY_SIZES: DisplaySize[] = [DEFAULT_SIZE, { width: 128, height: 64 }];
+
 /** Bicolor panels show one LED color (on/off); multicolor panels show any RGB color. */
 export type DisplayMode = 'mono' | 'rgb';
 

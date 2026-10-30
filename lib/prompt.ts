@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { HEIGHT, WIDTH, type DisplayMode } from './animation';
+import { DEFAULT_SIZE, type DisplayMode, type DisplaySize } from './animation';
 
 // Instructions and tool schema for writing animations; shared by the chat and the screens' API.
 
@@ -19,8 +19,10 @@ const RGB = {
     'Every pixel keeps its color, and black means the LED is off. Design colorful animations: use hsl() hues, gradients and contrasting colors. Keep shapes at least 1px wide and bright; dim colors look off on real LEDs.',
 };
 
-export const systemPrompt = (mode: DisplayMode) => {
+export const systemPrompt = (mode: DisplayMode, size: DisplaySize = DEFAULT_SIZE) => {
   const m = mode === 'rgb' ? RGB : MONO;
+  const { width: WIDTH, height: HEIGHT } = size;
+  const bigger = WIDTH > DEFAULT_SIZE.width;
   return `You design animations for ${m.display} that is ${WIDTH} pixels wide and ${HEIGHT} pixels tall.
 Whenever the user describes or changes an animation, call the createAnimation tool with the complete code, then reply with one short sentence.
 
@@ -34,7 +36,12 @@ The code is the BODY of this function, called once per frame:
 - textWidth(str): width in pixels of text(str).
 Every pixel is thresholded to on/off, so draw in pure white and avoid thin anti-aliased shapes; prefer fillRect, setPixel and filled arcs.
 The function must be pure: compute everything from t or p, keep no state between frames, and use no timers, network or DOM.
-Scrolling text must be easy to read: move it 1 pixel per frame at 15 to 20 fps (never more than 25 pixels per second), and make durationMs long enough for the whole text to pass once: at least (textWidth(str) + w) / speed * 1000, up to 20000. Prefer text that fits without scrolling (10 characters per line, 2 lines at most).
+Scrolling text must be easy to read: move it 1 pixel per frame at 15 to 20 fps (never more than 25 pixels per second), and make durationMs long enough for the whole text to pass once: at least (textWidth(str) + w) / speed * 1000, up to 20000. Prefer text that fits without scrolling (10 characters per line, 2 lines at most).${
+    bigger
+      ? `
+This display has fine pixels, so text() is small on it: draw text at double size with ctx.save(); ctx.scale(2, 2); text(str, x / 2, y / 2); ctx.restore(). Use the extra pixels for finer shapes and detail, not smaller things.`
+      : ''
+  }
 Keep code under 80 lines. Pick fps between 10 and 30 and durationMs between 1000 and 10000 (longer only for scrolling text).
 On follow-up requests, return the full updated code, not a diff.`;
 };

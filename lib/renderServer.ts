@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import '@napi-rs/canvas'; // so the deployment includes it; the worker loads it by path
-import { HEIGHT, RENDER_CORE, WIDTH, type Animation, type DisplayMode, type Frame, type TextDraw } from './animation';
+import { DEFAULT_SIZE, RENDER_CORE, type Animation, type DisplayMode, type DisplaySize, type Frame, type TextDraw } from './animation';
 import { FONT_5X7 } from './font';
 
 // Generated code runs in a worker thread with an empty environment (no API keys), no network
@@ -30,13 +30,14 @@ const canvasPath = createRequire(path.join(process.cwd(), 'package.json')).resol
 export function renderOnServer(
   anim: Animation,
   mode: DisplayMode,
+  size: DisplaySize = DEFAULT_SIZE,
   timeoutMs = 8000,
 ): Promise<{ frames: Frame[]; texts: TextDraw[] }> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(workerSource(canvasPath), {
       eval: true,
       env: {},
-      workerData: { ...anim, width: WIDTH, height: HEIGHT, mode },
+      workerData: { ...anim, ...size, mode },
       resourceLimits: { maxOldGenerationSizeMb: 128 },
     });
     const timer = setTimeout(() => {

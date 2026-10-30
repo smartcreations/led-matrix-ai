@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { generateText, tool } from 'ai';
-import { HEIGHT, WIDTH, type Animation, type DisplayMode, type Frame } from './animation';
+import { DEFAULT_SIZE, DISPLAY_SIZES, type Animation, type DisplayMode, type DisplaySize, type Frame } from './animation';
 import { checkText, judgeAnimation, judgeEnabled } from './judge';
 import { encodeAnimation } from './lmx';
 import { deviceModel } from './models';
@@ -35,6 +35,16 @@ export function localTime(req: Request) {
   }
 }
 
+/**
+ * The size a screen asks for with "X-Display-Size: 128x64". Screens that don't ask, like the
+ * panels, get the default. Null for a size that isn't offered.
+ */
+function displaySize(req: Request): DisplaySize | null {
+  const asked = req.headers.get('x-display-size');
+  if (!asked) return DEFAULT_SIZE;
+  return DISPLAY_SIZES.find((s) => `${s.width}x${s.height}` === asked) ?? null;
+}
+
 // The screens get questions as well as animation ideas, and have no other way to answer.
 const deviceInstructions = (now: string) => `
 
@@ -48,9 +58,17 @@ Speed matters: the person is waiting. Keep the code short (under 40 lines), and 
  * title (and `extraHeaders`) as headers. If the first code doesn't render, Claude gets the error
  * and one more try.
  */
-export async function animationResponse(...args: Parameters<typeof makeAnimation>) {
+export async function animationResponse(
+  req: Request,
+  prompt: string,
+  mode: DisplayMode,
+  extraHeaders: Record<string, string> = {},
+  timings: Record<string, number> = {},
+) {
+  const size = displaySize(req);
+  if (!size) return new Response('Unsupported display size', { status: 400 });
   try {
-    return await makeAnimation(...args);
+    return await makeAnimation(req, prompt, mode, size, extraHeaders, timings);
   } catch (e) {
     // The screen prints the start of the reply, so the cause shows up in its log too.
     console.error('[device] failed:', e);
@@ -62,8 +80,9 @@ async function makeAnimation(
   req: Request,
   prompt: string,
   mode: DisplayMode,
-  extraHeaders: Record<string, string> = {},
-  timings: Record<string, number> = {},
+  size: DisplaySize,
+  extraHeaders: Record<string, string>,
+  timings: Record<string, number>,
 ) {
   // How long each stage takes, in the logs and the Server-Timing header.
   let mark = Date.now();
@@ -100,7 +119,7 @@ async function makeAnimation(
   // Most prompts are things to draw, so drawing starts while the router decides; a question
   // cancels it and draws the answer instead.
   const cancelDraft = new AbortController();
-  const draft = writeAnimation(prompt, mode, now, cancelDraft.signal).catch(() => null);
+  const draft = writeAnimation(prompt, mode, size, now, cancelDraft.signal).catch(() => null);
   const route = await routePrompt(prompt);
   lap('route');
   if (route !== 'draw') cancelDraft.abort();
@@ -117,16 +136,16 @@ async function makeAnimation(
   let fallback: { anim: Animation; frames: Frame[] } | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const anim =
-      attempt === 0 && route === 'draw' ? await draft : await writeAnimation(drawPrompt + feedback, mode, now);
+      attempt === 0 && route === 'draw' ? await draft : await writeAnimation(drawPrompt + feedback, mode, size, now);
     lap('write');
     if (!anim) break;
     let frames: Frame[];
     let problem: string | null;
     try {
-      const rendered = await renderOnServer(anim, mode);
+      const rendered = await renderOnServer(anim, mode, size);
       frames = rendered.frames;
       if (!frames.length) throw new Error('No frames were drawn');
-      problem = checkText(rendered.texts, anim);
+      problem = checkText(rendered.texts, anim, size);
       lap('render');
     } catch (e) {
       lap('render');
@@ -134,7 +153,7 @@ async function makeAnimation(
       continue;
     }
     if (attempt === 0 && !problem && judgeEnabled) {
-      problem = await judgeAnimation(drawPrompt, anim, frames, mode).catch(() => null);
+      problem = await judgeAnimation(drawPrompt, anim, frames, mode, size).catch(() => null);
       lap('judge');
     }
     if (attempt === 0 && problem) {
@@ -153,18 +172,19 @@ async function makeAnimation(
 async function writeAnimation(
   prompt: string,
   mode: DisplayMode,
+  size: DisplaySize,
   now: string,
   abortSignal?: AbortSignal,
 ): Promise<Animation | null> {
   const { toolCalls } = await generateText({
     model: deviceModel,
     abortSignal,
-    system: systemPrompt(mode) + deviceInstructions(now),
+    system: systemPrompt(mode, size) + deviceInstructions(now),
     toolChoice: { type: 'tool', toolName: 'createAnimation' },
     prompt,
     tools: {
       createAnimation: tool({
-        description: `Show an animation on the ${WIDTH}x${HEIGHT} ${mode === 'rgb' ? 'full-color' : 'single-color'} LED display.`,
+        description: `Show an animation on the ${size.width}x${size.height} ${mode === 'rgb' ? 'full-color' : 'single-color'} LED display.`,
         inputSchema: animationSchema,
       }),
     },

@@ -1,7 +1,7 @@
 import { createCanvas } from '@napi-rs/canvas';
 import { generateText, Output } from 'ai';
 import { z } from 'zod';
-import { HEIGHT, WIDTH, type Animation, type DisplayMode, type Frame, type TextDraw } from './animation';
+import { DEFAULT_SIZE, type Animation, type DisplayMode, type DisplaySize, type Frame, type TextDraw } from './animation';
 import { routerModel } from './models';
 
 // Two checks on a rendered animation. checkText is instant: it looks at where every text()
@@ -17,7 +17,7 @@ const MAX_SCROLL_SPEED = 30; // pixels per second that are still easy to read
  * Text is cut off when it doesn't fit and doesn't move; moving text must go slowly enough to
  * read and far enough to show every letter.
  */
-export function checkText(texts: TextDraw[], anim: Animation): string | null {
+export function checkText(texts: TextDraw[], anim: Animation, { width: WIDTH, height: HEIGHT }: DisplaySize = DEFAULT_SIZE): string | null {
   const byString = new Map<string, TextDraw[]>();
   for (const t of texts) {
     if (!t.str.trim()) continue;
@@ -73,13 +73,14 @@ export function checkText(texts: TextDraw[], anim: Animation): string | null {
 }
 
 const SHOWN = 6; // frames on the contact sheet
-const LED = 5; // pixels per LED
+const SHEET_WIDTH = 320; // of one frame, so LEDs shrink on finer displays
 const GAP = 12; // between frames
 
 /** A PNG of SHOWN evenly spaced frames in a 2-column grid, each LED a dot on black. */
-function contactSheet(frames: Frame[], mode: DisplayMode) {
+function contactSheet(frames: Frame[], mode: DisplayMode, { width: WIDTH, height: HEIGHT }: DisplaySize) {
   const cols = 2;
   const rows = Math.ceil(SHOWN / cols);
+  const LED = Math.round(SHEET_WIDTH / WIDTH);
   const fw = WIDTH * LED;
   const fh = HEIGHT * LED;
   const canvas = createCanvas(cols * fw + (cols + 1) * GAP, rows * fh + (rows + 1) * GAP);
@@ -105,7 +106,7 @@ function contactSheet(frames: Frame[], mode: DisplayMode) {
 }
 
 /** Fraction of LEDs lit across all frames. */
-function litShare(frames: Frame[]) {
+function litShare(frames: Frame[], { width: WIDTH, height: HEIGHT }: DisplaySize) {
   let lit = 0;
   for (const f of frames) for (const row of f) for (const v of row) if (v) lit++;
   return lit / (frames.length * WIDTH * HEIGHT);
@@ -115,8 +116,15 @@ function litShare(frames: Frame[]) {
  * Returns null when the animation looks right, or what's wrong with it, phrased as feedback
  * for the model that wrote it.
  */
-export async function judgeAnimation(request: string, anim: Animation, frames: Frame[], mode: DisplayMode) {
-  if (litShare(frames) < 0.005) return 'The display is almost completely dark. Draw bright, visible shapes.';
+export async function judgeAnimation(
+  request: string,
+  anim: Animation,
+  frames: Frame[],
+  mode: DisplayMode,
+  size: DisplaySize = DEFAULT_SIZE,
+) {
+  const { width: WIDTH, height: HEIGHT } = size;
+  if (litShare(frames, size) < 0.005) return 'The display is almost completely dark. Draw bright, visible shapes.';
   const { output } = await generateText({
     model: routerModel,
     output: Output.object({
@@ -140,7 +148,7 @@ Judge only what matters on a real LED panel. Is it ok? Say not ok only for clear
 - the important part is too small, too dim or lost in clutter
 - scrolling text moves so far between frames that it would be hard to read`,
           },
-          { type: 'image', image: contactSheet(frames, mode), mediaType: 'image/png' },
+          { type: 'image', image: contactSheet(frames, mode, size), mediaType: 'image/png' },
         ],
       },
     ],

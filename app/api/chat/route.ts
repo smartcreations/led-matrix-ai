@@ -9,10 +9,12 @@ import {
 import { HEIGHT, WIDTH, type DisplayMode } from '@/lib/animation';
 import { chatModel } from '@/lib/models';
 import { animationSchema, systemPrompt } from '@/lib/prompt';
+import { siteAuthorized } from '@/lib/sitePasscode';
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
+  if (!siteAuthorized(req)) return new Response('Unauthorized', { status: 401 });
   const { messages, mode = 'mono' }: { messages: UIMessage[]; mode?: DisplayMode } = await req.json();
 
   const result = streamText({

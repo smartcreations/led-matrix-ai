@@ -10,6 +10,26 @@ import { sendToPanel, serialSupported } from '@/lib/panelSerial';
 const BLANK: Frame = Array.from({ length: HEIGHT }, () => new Array(WIDTH).fill(0));
 const MODE_KEY = 'led-display-mode';
 const LAST_DEMO_KEY = 'led-last-demo';
+const PASSCODE_KEY = 'led-site-passcode';
+
+/** The saved site passcode, as a header for the AI routes (see lib/sitePasscode.ts). */
+function passcodeHeaders(): Record<string, string> {
+  try {
+    const code = localStorage.getItem(PASSCODE_KEY);
+    if (code) return { 'X-Site-Passcode': code };
+  } catch {}
+  return {};
+}
+
+/** Asks for the site passcode and saves it; true when one was entered. */
+function askPasscode() {
+  const code = window.prompt('This site needs a passcode:');
+  if (!code) return false;
+  try {
+    localStorage.setItem(PASSCODE_KEY, code);
+  } catch {}
+  return true;
+}
 
 /** A random demo that suits the saved display type, avoiding the one shown last time. */
 function randomDemo(): Animation {
@@ -71,7 +91,9 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     setSuggestions([]);
-    fetch(`/api/suggestions?mode=${mode}`)
+    const load = () => fetch(`/api/suggestions?mode=${mode}`, { headers: passcodeHeaders() });
+    load()
+      .then((r) => (r.status === 401 && askPasscode() ? load() : r))
       .then((r) => r.json())
       .then((d: { suggestions?: string[] }) => !cancelled && setSuggestions(d.suggestions ?? []))
       .catch(() => {});
@@ -126,7 +148,7 @@ export default function Home() {
 
   const frame = frames[index] ?? BLANK;
   const litCount = useMemo(() => frame.reduce((n, row) => n + row.filter((v) => v !== 0).length, 0), [frame]);
-  const send = (text: string) => sendMessage({ text }, { body: { mode } });
+  const send = (text: string) => sendMessage({ text }, { body: { mode }, headers: passcodeHeaders() });
 
   const copyFrame = () => navigator.clipboard.writeText(JSON.stringify(frame));
   const copyAll = () => navigator.clipboard.writeText(JSON.stringify(frames));
@@ -236,9 +258,18 @@ export default function Home() {
             </div>
           ))}
           {busy && <span className="muted">Thinking…</span>}
-          {chatError && (
-            <div className="error">Chat failed: {chatError.message} Check the server log; is ANTHROPIC_API_KEY (or AI_GATEWAY_API_KEY) set in .env.local?</div>
-          )}
+          {chatError &&
+            (chatError.message.includes('Unauthorized') ? (
+              <div className="error">
+                This site needs a passcode.{' '}
+                <button type="button" onClick={askPasscode}>
+                  Enter passcode
+                </button>{' '}
+                Then send your idea again.
+              </div>
+            ) : (
+              <div className="error">Chat failed: {chatError.message} Check the server log; is ANTHROPIC_API_KEY (or AI_GATEWAY_API_KEY) set in .env.local?</div>
+            ))}
         </div>
         <form
           className="composer"

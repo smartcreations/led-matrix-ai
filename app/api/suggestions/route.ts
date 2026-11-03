@@ -2,6 +2,7 @@ import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { HEIGHT, WIDTH } from '@/lib/animation';
 import { suggestModel } from '@/lib/models';
+import { siteAuthorized } from '@/lib/sitePasscode';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,7 @@ const FALLBACK_RGB = [
 
 /** Four short animation ideas to start the chat with; falls back to a fixed list on error or after 5s. */
 export async function GET(req: Request) {
+  if (!siteAuthorized(req)) return new Response('Unauthorized', { status: 401 });
   const rgb = new URL(req.url).searchParams.get('mode') === 'rgb';
   try {
     const { output } = await generateText({

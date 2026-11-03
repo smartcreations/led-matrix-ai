@@ -3,6 +3,7 @@
 import { useChat } from '@ai-sdk/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import LedMatrix from '@/components/LedMatrix';
+import Unlock from '@/components/Unlock';
 import { HEIGHT, WIDTH, renderAnimation, type Animation, type DisplayMode, type Frame } from '@/lib/animation';
 import { DEMOS } from '@/lib/demos';
 import { sendToPanel, serialSupported } from '@/lib/panelSerial';
@@ -21,14 +22,10 @@ function passcodeHeaders(): Record<string, string> {
   return {};
 }
 
-/** Asks for the site passcode and saves it; true when one was entered. */
-function askPasscode() {
-  const code = window.prompt('This site needs a passcode:');
-  if (!code) return false;
+function savePasscode(code: string) {
   try {
     localStorage.setItem(PASSCODE_KEY, code);
   } catch {}
-  return true;
 }
 
 /** A random demo that suits the saved display type, avoiding the one shown last time. */
@@ -73,6 +70,20 @@ export default function Home() {
   const applied = useRef(new Set<string>());
   const { messages, sendMessage, status, error: chatError } = useChat();
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  // null while checking; false shows the lock screen (when the server has SITE_PASSCODE set).
+  const [unlocked, setUnlocked] = useState<boolean | null>(null);
+
+  // Check the saved passcode (or that none is needed) without calling any AI.
+  useEffect(() => {
+    fetch('/api/unlock', { method: 'POST', headers: passcodeHeaders() })
+      .then((r) => setUnlocked(r.ok))
+      .catch(() => setUnlocked(true));
+  }, []);
+
+  // Any AI call refused later (passcode changed) brings the lock screen back.
+  useEffect(() => {
+    if (chatError?.message.includes('Unauthorized')) setUnlocked(false);
+  }, [chatError]);
 
   // Restore the saved display type.
   useEffect(() => {
@@ -89,18 +100,23 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (!unlocked) return;
     let cancelled = false;
     setSuggestions([]);
-    const load = () => fetch(`/api/suggestions?mode=${mode}`, { headers: passcodeHeaders() });
-    load()
-      .then((r) => (r.status === 401 && askPasscode() ? load() : r))
-      .then((r) => r.json())
+    fetch(`/api/suggestions?mode=${mode}`, { headers: passcodeHeaders() })
+      .then((r) => {
+        if (r.status === 401) {
+          setUnlocked(false);
+          throw new Error('locked');
+        }
+        return r.json();
+      })
       .then((d: { suggestions?: string[] }) => !cancelled && setSuggestions(d.suggestions ?? []))
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, [mode, unlocked]);
 
   const load = useCallback(async (next: Animation) => {
     setAnim(next);
@@ -170,6 +186,14 @@ export default function Home() {
 
   return (
     <main className="app">
+      {unlocked === false && (
+        <Unlock
+          onUnlock={(code) => {
+            savePasscode(code);
+            setUnlocked(true);
+          }}
+        />
+      )}
       <section className="panel stage">
         <div className="toolbar" style={{ justifyContent: 'space-between' }}>
           <strong>{anim.title}</strong>
@@ -258,18 +282,9 @@ export default function Home() {
             </div>
           ))}
           {busy && <span className="muted">Thinking…</span>}
-          {chatError &&
-            (chatError.message.includes('Unauthorized') ? (
-              <div className="error">
-                This site needs a passcode.{' '}
-                <button type="button" onClick={askPasscode}>
-                  Enter passcode
-                </button>{' '}
-                Then send your idea again.
-              </div>
-            ) : (
-              <div className="error">Chat failed: {chatError.message} Check the server log; is ANTHROPIC_API_KEY (or AI_GATEWAY_API_KEY) set in .env.local?</div>
-            ))}
+          {chatError && !chatError.message.includes('Unauthorized') && (
+            <div className="error">Chat failed: {chatError.message} Check the server log; is ANTHROPIC_API_KEY (or AI_GATEWAY_API_KEY) set in .env.local?</div>
+          )}
         </div>
         <form
           className="composer"
